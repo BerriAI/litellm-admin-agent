@@ -57,6 +57,10 @@ async def test_health_card_and_admin_roundtrip(service):
     card = await (await client.get("/.well-known/agent-card.json")).json()
     assert not card["capabilities"]["streaming"]
     assert card["url"] == "https://admin.example.com/a2a"
+    for suffix in ("agent-card.json", "agent.json"):
+        discovered = await client.get("/a2a/.well-known/" + suffix)
+        assert discovered.status == 200
+        assert await discovered.json() == card
     result = await client.post("/a2a", headers=headers(), json=request())
     assert result.status == 200
     body = await result.json()

@@ -130,6 +130,9 @@ def create_web_app(settings, authorizer, runner, journal, connections=None):
     app.router.add_get("/healthz", health)
     app.router.add_get("/.well-known/agent-card.json", discovery)
     app.router.add_get("/.well-known/agent.json", discovery)
+    # LiteLLM's A2A resolver discovers relative to the registered endpoint URL.
+    app.router.add_get("/a2a/.well-known/agent-card.json", discovery)
+    app.router.add_get("/a2a/.well-known/agent.json", discovery)
     app.router.add_post("/a2a", send)
     if connections is not None:
         connections.add_routes(app)
