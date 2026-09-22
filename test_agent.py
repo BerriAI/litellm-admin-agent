@@ -207,7 +207,7 @@ async def test_connection_failure_does_not_claim_a_mutation_may_have_completed()
         yield
     slack = FakeSlack()
     await build_listener(settings(), Journal(":memory:"), ScriptedModel(), connect, authorizer=FakeAuthorizer(), connections=FakeConnections())(event(), slack)
-    assert "No changes were made" in slack.updates[0]["text"]
+    assert "No requested operation was run" in slack.updates[0]["text"]
     assert "may already have completed" not in slack.updates[0]["text"]
 
 

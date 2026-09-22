@@ -9,11 +9,13 @@ import logging
 import secrets
 import time
 from dataclasses import dataclass, field
+from typing import Awaitable, Callable
 
 from aiohttp import web
 from cryptography.fernet import Fernet, InvalidToken
 
-from auth import AccessDenied, AuthorizationUnavailable
+from auth import AccessDenied, AuthorizationUnavailable, Principal
+from access import ToolAccessUnavailable
 
 
 class ConnectionRequired(Exception):
@@ -108,11 +110,13 @@ input,button{{font:inherit;padding:12px;box-sizing:border-box;width:100%;margin:
 
 
 class Connections:
-    def __init__(self, settings, store: ConnectionStore, authorizer, slack):
+    def __init__(self, settings, store: ConnectionStore, authorizer, slack,
+                 ensure_access: Callable[[Principal, str], Awaitable[None]] | None = None):
         self.settings = settings
         self.store = store
         self.authorizer = authorizer
         self.slack = slack
+        self.ensure_access = ensure_access
 
     def owner(self, slack_user):
         return self.settings.workspace + ":" + slack_user
@@ -143,6 +147,7 @@ class Connections:
         gateway = html.escape(self.settings.gateway_url + "/ui", quote=True)
         result = page("Connect your LiteLLM account", f"""<p>Use a personal admin key from <a href="{gateway}" target="_blank" rel="noreferrer">your LiteLLM gateway account</a>. Your gateway email must match your Slack email.</p>
 <p>Requests, model access and admin actions will use your account’s permissions. Your key is encrypted before it is saved.</p>
+<p>After verifying your admin account, we automatically enable the LiteLLM Admin tools for this key. First-time activation can take about a minute.</p>
 <form method="post"><input type="hidden" name="csrf" value="{csrf}">
 <label for="credential">Your personal LiteLLM key</label>
 <input id="credential" name="credential" type="password" required maxlength="8192" autocomplete="off" spellcheck="false">
@@ -173,10 +178,17 @@ class Connections:
                 raise AccessDenied()
             credential = str(form.get("credential", "")).strip()
             principal = await self.authorizer.require_slack_admin(slack_user, self.slack, credential)
+            if self.ensure_access:
+                await self.ensure_access(principal, credential)
+                if await self.authorizer.require_slack_admin(slack_user, self.slack, credential) != principal:
+                    raise AccessDenied()
             self.store.save(owner, principal.user_id, credential)
             result = page("Account connected", "<p>Return to your private Slack conversation with LiteLLM Admin and send your request again.</p>")
             result.del_cookie(COOKIE, path="/", secure=True, httponly=True, samesite="Strict")
             return result
+        except ToolAccessUnavailable:
+            logging.warning("Account connection rejected (admin_tool_access)")
+            return page("Couldn’t enable admin tools", "<p>Your admin account was verified, but we couldn’t enable the admin tools for this key. Check its MCP, team, and route restrictions in the gateway, then send <strong>connect</strong> in Slack for a new link.</p>", 503)
         except AuthorizationUnavailable:
             logging.warning("Account connection rejected (authorization_unavailable)")
             return page("Couldn’t verify access", "<p>The gateway or Slack is temporarily unavailable. Send <strong>connect</strong> in Slack for a new link and try again.</p>", 503)

@@ -65,6 +65,7 @@ class Settings:
     encryption_key: str = field(default="", repr=False)
     service_token: str = field(default="", repr=False)
     public_url: str = ""
+    mcp_server_id: str = "ef03105f-8be2-458b-9732-d6cd96f21cc8"
 
     @property
     def gateway_url(self) -> str:
@@ -83,6 +84,7 @@ class Settings:
             encryption_key=os.getenv("CREDENTIAL_ENCRYPTION_KEY", ""),
             service_token=os.getenv("ADMIN_AGENT_SERVICE_TOKEN", ""),
             public_url=(os.getenv("AGENT_PUBLIC_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").rstrip("/"),
+            mcp_server_id=os.getenv("LITELLM_MCP_SERVER_ID", "ef03105f-8be2-458b-9732-d6cd96f21cc8"),
         )
 
     def validate(self) -> None:
@@ -90,6 +92,7 @@ class Settings:
                     "ADMIN_TOOL_NAMES": self.tool_names, "LITELLM_BASE_URL": self.model_url,
                     "LITELLM_MODEL": self.model, "SLACK_BOT_TOKEN": self.bot_token,
                     "SLACK_APP_TOKEN": self.app_token, "CREDENTIAL_ENCRYPTION_KEY": self.encryption_key,
+                    "LITELLM_MCP_SERVER_ID": self.mcp_server_id,
                     "AGENT_PUBLIC_URL or RENDER_EXTERNAL_URL": self.public_url}
         missing = [name for name, value in required.items() if not value]
         if missing:
@@ -142,4 +145,3 @@ def agent_for(bridge: ToolBridge, model) -> Agent:
         tools=[find_admin_tools, call_admin_tool],
         model_settings=ModelSettings(parallel_tool_calls=False),
     )
-
