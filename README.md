@@ -1,22 +1,20 @@
 # LiteLLM Admin Agent
 
-Run a private Slack assistant for your own LiteLLM gateway. Ask about keys, teams, budgets and spending; optionally enable administrative changes. Each person connects their own gateway admin account. Model usage and tool calls use that person’s credential.
+Manage your LiteLLM gateway from a Slack DM.
 
-**Deployment model:** one service, one gateway, one Slack workspace. You create your own Slack app from the included manifest and host the service yourself. No Slack Marketplace listing or shared multi-workspace service is required. Slack DMs are supported; channels and group DMs are intentionally ignored.
+- Ask about keys, teams, budgets and spending.
+- Connect with your own LiteLLM admin account.
+- Start in read-only mode. Enable changes after testing.
+- Host one agent for one gateway and one Slack workspace.
 
-New installations are **read-only by default**. Writes require the operator to set `ADMIN_READ_ONLY=false`. This is enforced in the tool layer and HTTP backend, independently of model instructions.
+## Before you start
 
-## Prerequisites
+- Use a LiteLLM gateway with HTTPS, a database and a model that supports tool calling. Check the [gateway requirements](docs/compatibility.md) for admin MCP support.
+- Give each user a LiteLLM `proxy_admin` account with the same email as their Slack profile.
+- Get permission to create and install a Slack app in your workspace.
+- Install Python 3.12 for the setup commands. Choose Docker Compose or a paid Render service with persistent storage for hosting.
 
-- A LiteLLM gateway on HTTPS, with a database, a model that supports tool calling, and native OpenAPI MCP server registration (`/v1/mcp/server`, an alias-specific `/personal_admin/mcp`, and per-request backend authorization forwarding).
-- Gateway users with the **`proxy_admin`** role and email addresses matching their Slack profiles. Slack admin/owner status alone does not grant access. Ordinary users, viewers, guests and bots are denied.
-- Permission to create/install a custom Slack app in your workspace. Your Slack organization may require an owner to approve the installation.
-- A dedicated HTTPS origin for the agent, reachable by users and the gateway, plus persistent writable storage. Outbound HTTPS/WSS access to Slack and HTTPS access to your gateway are required.
-- Docker Compose, or a paid Render web service with a persistent disk. For local setup helpers: Python 3.12.
-
-Compatibility is capability-based: `configure_mcp.py` checks the gateway’s actual OpenAPI routes and `doctor.py` checks native MCP discovery. Older gateways without these MCP features need an upgrade. The shipped route inventory was captured on LiteLLM 1.103.0; it is not a claim that all releases of that version support hosted OAuth. See [gateway compatibility](docs/compatibility.md).
-
-## 1. Get the code and create private configuration
+## 1. Create your configuration
 
 ```sh
 git clone https://github.com/BerriAI/litellm-admin-agent.git
@@ -27,48 +25,52 @@ pip install --require-hashes -r requirements.txt
 python setup_env.py
 ```
 
-`setup_env.py` creates a mode-0600 `.env` with unique encryption and service secrets. It refuses to overwrite an existing file. Save the encryption key in your secret manager: it must stay the same across restarts and upgrades.
+- Open the new `.env` file to enter your settings.
+- Keep `.env` private. Save the generated `CREDENTIAL_ENCRYPTION_KEY` in your secret manager and keep it across upgrades.
+- Edit your existing `.env` if you have one.
 
-Fill in these fields in `.env`:
+## 2. Install your Slack app
 
-| Field | Value |
-| --- | --- |
-| `LITELLM_BASE_URL` | Your gateway URL, e.g. `https://gateway.example.com/v1` |
-| `LITELLM_MODEL` | A model name configured on **your** gateway and accessible to your admins |
-| `AGENT_PUBLIC_URL` | The agent’s dedicated HTTPS origin, e.g. `https://admin.example.com`; no subpath |
-| `SLACK_WORKSPACE_ID` | Your workspace’s `T…` ID; find it in the Slack web URL |
-| `SLACK_BOT_TOKEN` | The installed app’s `xoxb-…` token |
-| `SLACK_APP_TOKEN` | The app’s Socket Mode `xapp-…` token |
+- Open [Slack’s app dashboard](https://api.slack.com/apps). Choose **Create New App → From a manifest**, then select your workspace.
+- Paste [`slack-manifest.json`](slack-manifest.json) and create the app.
+- Under **Basic Information → App-Level Tokens**, create a token with `connections:write`. Save it in `.env` as `SLACK_APP_TOKEN`.
+- Under **OAuth & Permissions**, install the app to your workspace. Save the bot token as `SLACK_BOT_TOKEN`.
+- Copy your workspace’s `T…` ID from the Slack web URL into `SLACK_WORKSPACE_ID`.
+- Enable **Socket Mode** and the app’s **Messages** tab. Use one running agent per Slack app.
 
-Leave `CONNECTION_AUTH_MODE=api_key` for the portable installation path. Users submit their **personal** virtual key on a private browser page, never in Slack. The connection is encrypted, expires after 24 hours, and is reauthorized against the gateway before use. For browser SSO without key entry, see [SSO setup](docs/compatibility.md#optional-browser-sso).
+## 3. Choose your gateway and login method
 
-Do not use shared/master credentials for runtime requests. Setup-only `LITELLM_ADMIN_KEY` and `LITELLM_SETUP_KEY` are read only by the explicitly invoked setup helpers; normal startup never uses them.
+Set these values in `.env`. For Render, enter the same settings under your service’s **Environment** tab and keep the local `.env` for the setup commands.
 
-## 2. Create and install your Slack app
+- **Gateway URL:** set `LITELLM_BASE_URL`, for example `https://gateway.example.com/v1`.
+- **Model:** set `LITELLM_MODEL` to a model name your admins can use on that gateway.
+- **API-key login:** keep `CONNECTION_AUTH_MODE=api_key`. Users enter their own proxy-admin virtual key on a private browser page. Keep keys out of Slack messages.
+- **SSO login:** set `CONNECTION_AUTH_MODE=sso`. Configure [SSO and the callback URL on your gateway](docs/compatibility.md#optional-browser-sso) before using this mode.
+- **Agent URL:** set `AGENT_PUBLIC_URL` to the agent’s HTTPS address, such as `https://admin.example.com`, without a path. For Render, fill this into your local `.env` after deployment.
 
-1. Open [Slack’s app dashboard](https://api.slack.com/apps), choose **Create New App → From a manifest**, and select your workspace.
-2. Paste the contents of [`slack-manifest.json`](slack-manifest.json). Review and create the app.
-3. Under **Basic Information → App-Level Tokens**, create a token with the `connections:write` scope. Save it as `SLACK_APP_TOKEN`.
-4. Under **OAuth & Permissions**, choose **Install to Workspace** and approve the requested scopes. Save the bot token as `SLACK_BOT_TOKEN`.
-5. Confirm **Socket Mode** is enabled. The manifest subscribes to `message.im` and enables the app’s Messages tab. No Slack event Request URL is needed.
+You choose **one login method for the deployment**. Each Slack user connects their own account through that method.
 
-The bot requests only `chat:write`, `im:history`, `users:read` and `users:read.email`. Reinstall the app after changing scopes. Each deployment gets its own app tokens; do not reuse an app across multiple running listeners.
+## 4. Deploy
 
-## 3. Deploy
+### Render
 
-Validate your configuration first:
-
-```sh
-python doctor.py --offline
-```
+- Create a Blueprint from this repository or your fork using [`render.yaml`](render.yaml).
+- Choose a paid plan with a persistent disk and keep one instance.
+- Enter your gateway, model, Slack settings and generated `CREDENTIAL_ENCRYPTION_KEY`. Choose your `CONNECTION_AUTH_MODE` in the service’s **Environment** tab.
+- Deploy, then copy the service’s HTTPS URL into your local `.env` as `AGENT_PUBLIC_URL`.
+- Keep the service token that Render generates. You need it for [optional gateway Agents registration](docs/compatibility.md#optional-gateway-agents--a2a).
 
 ### Docker Compose
 
+- Set `AGENT_PUBLIC_URL` in `.env` to the HTTPS address you plan to use.
+- Run:
+
 ```sh
+python doctor.py --offline
 docker compose up -d --build
 ```
 
-The included Compose file binds port 10000 to localhost and keeps state in the `admin-state` named volume. Put a TLS reverse proxy on the same host in front of it. For example, a host-installed Caddy configuration:
+- Point your domain at the host and put an HTTPS reverse proxy in front of port 10000. For Caddy on the same host:
 
 ```caddyfile
 admin.example.com {
@@ -76,70 +78,60 @@ admin.example.com {
 }
 ```
 
-Point DNS at the host first. If your reverse proxy is containerized or remote, use its private network address instead of localhost. Do not expose plain HTTP to users. Avoid access logs containing `/connect/*` paths or `/oauth/callback` query strings: they contain short-lived login material. Forward the original Origin header unchanged.
+- Use a private network address if you run the reverse proxy in another container or on another host.
+- Keep the `admin-state` volume across restarts and upgrades.
 
-The image runs as UID 10001 with a read-only root filesystem, dropped capabilities and persistent `/var/data`. Compose passes only explicitly listed runtime settings, so setup credentials in your local environment are not injected into the container.
+## 5. Connect the gateway tools
 
-### Render
+Run these setup commands on your computer after deployment.
 
-Create a Render Blueprint using this repository (or your accessible fork) and [`render.yaml`](render.yaml). Choose the paid plan with a persistent disk and fill in your own gateway, model, Slack workspace/tokens, and encryption key. Render generates a service token and provides `RENDER_EXTERNAL_URL`; put that URL in your local `.env` as `AGENT_PUBLIC_URL` for the setup helpers. Copy the generated service token locally only if you want optional A2A registration.
-
-After the next step, copy the generated `ADMIN_TOOL_NAMES` value from local `.env` into Render. Use a single instance and manual deployments. This consumes paid hosting resources; the blueprint does not deploy a gateway or configure DNS for you.
-
-Both options expose `/healthz` for liveness, `/readyz` for local database/Slack connectivity, and a landing page at `/`. Readiness does not prove that a user can run a model or tool; finish the checks below.
-
-## 4. Register the gateway tools and verify
-
-The app must be reachable by your gateway at `AGENT_PUBLIC_URL` before using its tools. Provide `LITELLM_ADMIN_KEY` to your **local setup process** using your secret manager or a private environment. This is a one-time gateway setup credential; do not add it to Render.
+- Add `LITELLM_ADMIN_KEY` to your local setup environment using your secret manager. Use this credential for setup; keep it out of the hosted service’s settings.
+- Preview the gateway tool registration and save the tool names to `.env`:
 
 ```sh
-# Preview the registration and save the compatible tool names in local .env.
 python configure_mcp.py --write-tool-names
-# Create the dedicated registration after reviewing the preview.
-python configure_mcp.py --apply
-# Reload ADMIN_TOOL_NAMES in Docker; on Render copy it into environment settings.
-docker compose up -d --force-recreate
 ```
 
-The helper creates `personal_admin`, points its backend at **your agent’s `/admin-api`**, and stores no backend credential. It refuses duplicate registrations. If `personal_admin` already exists, inspect it before changing it; never set `allow_all_keys=true` on a registration pointing directly at your gateway API. Discovery can be visible to other gateway users, but the backend independently requires a live proxy admin for every call.
+- Review the preview, then create the registration:
 
-Set `LITELLM_SETUP_KEY` in the local setup process to your personal proxy-admin key, then run:
+```sh
+python configure_mcp.py --apply
+```
+
+- Use the agent’s `/admin-api` address from the preview as the backend, with no stored backend credential. Inspect an existing `personal_admin` registration before changing it.
+- **Render:** copy `ADMIN_TOOL_NAMES` from local `.env` into the service’s **Environment** tab, then deploy.
+- **Docker:** reload the settings with `docker compose up -d --force-recreate`.
+- Set `LITELLM_SETUP_KEY` in your local environment to your personal proxy-admin key, then check the setup:
 
 ```sh
 python doctor.py
 ```
 
-This verifies identity, model availability, compatible management routes, the MCP backend URL and exact tool discovery, Slack workspace/scopes and the Socket Mode app token. Gateway listings redact stored secrets, so an existing registration’s empty credential response does not prove it has no shared credential; verify its configuration separately. The preflight does not invoke an LLM, run management tools or send Slack messages. Remove setup credentials from your environment afterward.
+- Run this check to verify your gateway, model access, tool setup and Slack tokens without making model requests, changing gateway state or sending Slack messages.
+- Remove the setup credentials from your local environment after the check.
 
-## 5. Connect and do a first read
+## 6. Connect from Slack
 
-1. Find **LiteLLM Admin** under Slack Apps and open a DM.
-2. Send **connect** and open the private link within ten minutes.
-3. Connect your own LiteLLM proxy-admin account. In personal-key mode, use a key for the same account/email as Slack. In SSO mode, sign in and consent on your gateway.
-4. Return to Slack and ask: **“List my teams and their current budgets.”**
-5. Confirm that a regular gateway user is denied and that **“Create a key”** is refused while read-only mode is enabled.
+- Open **LiteLLM Admin** under Slack Apps and send **connect**.
+- Open the private link within ten minutes.
+- Enter your personal gateway key or sign in with SSO, depending on the method you chose for the deployment.
+- Return to Slack and ask: **“List my teams and their current budgets.”**
+- Check that a gateway admin can use the agent and that a regular gateway user cannot.
+- Send **disconnect** to remove your saved connection. To revoke the credential itself, revoke it in LiteLLM.
 
-Send **disconnect** to delete the saved credential and invalidate pending connection links. It stops subsequent tools and result delivery in an in-flight request; it cannot undo an operation already sent. Revoke the credential in LiteLLM if you also need to invalidate it outside this app.
+## Enable changes
 
-When you are ready to permit changes, set `ADMIN_READ_ONLY=false` and redeploy. The model is instructed to change state only when requested, but write mode does not include a separate human approval workflow. Use a test gateway to validate your chosen model and administrative workflows before enabling writes in production. The operation inventory is bounded; this is not every Admin UI feature.
+- Keep `ADMIN_READ_ONLY=true` while you check the setup.
+- Test your model and write actions on a test gateway. Set `ADMIN_READ_ONLY=false` and redeploy to let admins create keys or change budgets and teams.
+- In write mode, users can request changes without a separate approval step. Check gateway state before retrying a change after a timeout.
 
-## Operations and development
+## More help
 
-- [Operations, backups, upgrades and troubleshooting](docs/operations.md)
-- [Gateway compatibility, SSO and optional A2A registration](docs/compatibility.md)
-- [Security model and launch acceptance checks](SECURITY.md)
-
-```sh
-pip install --require-hashes -r requirements-dev.txt
-python -m pytest -q
-docker build -t litellm-admin-agent:smoke .
-python scripts/smoke_container.py
-```
-
-CI runs the tests and boots the real image, checking readiness, runtime assets, non-root execution and replay protection after a container restart. The smoke test uses no external credentials and sends no Slack messages. Update dependency inputs in `requirements.in` / `requirements-dev.in`, then regenerate both hash-locked files with `uv pip compile --python-version 3.12 --generate-hashes`.
+- [Gateway requirements, SSO and gateway Agents registration](docs/compatibility.md)
+- [Troubleshooting, backups and upgrades](docs/operations.md)
+- [Security and launch checks](SECURITY.md)
+- [Development and tests](docs/development.md)
 
 ## License
 
-Licensed under the [MIT License](LICENSE). You can use, modify, self-host and redistribute this software, including commercially, while retaining the copyright and license notice.
-
-Before a public launch, the repository owner must make the source accessible to the intended users.
+Use, modify and redistribute this software under the [MIT License](LICENSE), including for commercial use. Keep the copyright and license notice with your copies.

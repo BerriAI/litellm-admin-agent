@@ -11,6 +11,9 @@ The gateway must support:
 
 `configure_mcp.py` intersects the shipped route inventory with the live OpenAPI spec. Missing routes are omitted; changed operation IDs fail setup until reviewed because read/write classification must stay accurate. `--write-tool-names` saves the compatible subset. `doctor.py` verifies it against live MCP discovery. Do not substitute a stored shared backend key to work around a compatibility failure.
 
+- Inspect existing `personal_admin` registrations for shared backend credentials. You cannot confirm their absence from a server listing because LiteLLM redacts stored secrets.
+- Point the registration at the agent’s `/admin-api` backend. Do not enable `allow_all_keys=true` on a registration that points at the gateway API.
+
 Personal-key mode (`CONNECTION_AUTH_MODE=api_key`) does not require gateway OAuth. Each key must belong to an active proxy-admin user, have model access, and match the Slack user’s verified email. Stored connections expire after 24 hours; the gateway’s own key expiry and revocation can shorten that. Connecting does not broaden a key’s gateway permissions.
 
 ## Optional browser SSO
