@@ -4,6 +4,8 @@ A shared admin assistant for BerriAI Slack and the LiteLLM sandbox gateway. It u
 
 ## Deployment status
 
+Private source: https://github.com/BerriAI/litellm-admin-agent. Automated checks currently pass (73 tests).
+
 The previous Tin-only bot is running on Tin’s Mac. This version adds shared, role-based Slack access and an A2A entry point and is prepared for Render. The hosted service, Slack scope reinstall, gateway registration, and final cutover still require completion. Do not run two Slack listeners during cutover: separate local journals cannot deduplicate each other’s work.
 
 ## Who can use it
