@@ -10,10 +10,10 @@ from aiohttp.test_utils import TestClient, TestServer
 from cryptography.fernet import Fernet
 
 from auth import AccessDenied, Principal
-from connections import COOKIE, ConnectionRequired, ConnectionStore, Connections
+from connections import COOKIE, OAUTH_COOKIE, ConnectionRequired, ConnectionStore, Connections
 from core import Journal
 from test_agent import settings
-from sso import DeviceFlow, SignInResult
+from sso import OAuthFlow, SignInResult
 
 
 def store(path=":memory:", key=None):
@@ -73,15 +73,15 @@ class Authorizer:
 class SSO:
     def __init__(self):
         self.starts = 0
-        self.polls = []
-        self.result = SignInResult(user_id="alice", credential="alice-session-secret")
+        self.exchanges = []
+        self.result = SignInResult(user_id="alice", expires_at=time.time() + 3600, credential="alice-session-secret")
     async def start(self):
         self.starts += 1
-        return DeviceFlow("cli-abcdefghijklmnopqrstuvwx", "ABCD-EFGH", time.time() + 600, "private-polling-secret")
+        return OAuthFlow("registered-client", time.time() + 600, "private-state", "private-pkce-verifier")
     def sign_in_url(self, flow):
-        return "https://example.com/sso/key/generate?source=litellm-cli&key=" + flow.login_id
-    async def poll(self, flow, team_id=None):
-        self.polls.append(team_id)
+        return "https://gateway.example/authorize?state=" + flow.state
+    async def exchange(self, flow, code):
+        self.exchanges.append(code)
         return self.result
 
 
@@ -115,27 +115,54 @@ async def form(service):
         "Origin": connections.settings.public_url, "Cookie": f"{COOKIE}={cookie.value}"}
 
 
-@pytest.mark.asyncio
-async def test_sso_stores_only_verified_session_then_rejects_replay(service):
-    client, connections, auth = service
+async def start(service):
+    client, _, _ = service
     path, data, headers = await form(service)
     result = await client.post(path, data=data, headers=headers)
     assert result.status == 200
     text = await result.text()
-    assert "ABCD-EFGH" in text and "Open LiteLLM SSO" in text
-    assert "private-polling-secret" not in text
-    assert "alice-session-secret" not in text
+    assert 'data-oauth-redirect' in text
+    assert "private-pkce-verifier" not in text and "alice-session-secret" not in text
+    cookie = result.cookies[OAUTH_COOKIE]
+    assert cookie["secure"] and cookie["httponly"] and cookie["samesite"] == "Lax"
+    return path, data, headers, {"Cookie": f"{OAUTH_COOKIE}={cookie.value}"}
+
+
+async def callback(client, headers, **query):
+    return await client.get("/oauth/callback", params={"state": "private-state", "code": "one-time-code", **query}, headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_sso_stores_only_verified_session_then_rejects_replay(service):
+    client, connections, auth = service
+    path, data, headers, oauth_headers = await start(service)
     with pytest.raises(ConnectionRequired): connections.get("Ualice")
-    result = await client.post(path, data={**data, "action": "check"}, headers=headers)
-    assert result.status == 200
-    assert "Account connected" in await result.text()
+    result = await callback(client, oauth_headers)
+    assert result.status == 200 and "Account connected" in await result.text()
     assert "alice-session-secret" not in await result.text()
     assert connections.get("Ualice").credential == "alice-session-secret"
+    assert connections.get("Ualice").expires_at == connections.sso.result.expires_at
     assert auth.calls == [("Ualice", "alice-session-secret")]
-    replay = await client.post(path, data=data, headers=headers)
-    assert replay.status == 410
-    assert "Link expired or already used" in await replay.text()
-    assert len(auth.calls) == 1
+    assert (await callback(client, oauth_headers)).status == 410
+    assert (await client.post(path, data=data, headers=headers)).status == 410
+    assert connections.sso.exchanges == ["one-time-code"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("attack", ["missing_cookie", "wrong_cookie", "state", "duplicate_state", "missing_code", "duplicate_code"])
+async def test_callback_binding_rejects_before_exchange(service, attack):
+    client, connections, _ = service
+    _, _, _, headers = await start(service)
+    query = [("state", "private-state"), ("code", "one-time-code")]
+    if attack == "missing_cookie": headers = {}
+    elif attack == "wrong_cookie": headers = {"Cookie": f"{OAUTH_COOKIE}=invalid"}
+    elif attack == "state": query[0] = ("state", "attacker-state")
+    elif attack == "duplicate_state": query.append(("state", "private-state"))
+    elif attack == "missing_code": query.pop()
+    elif attack == "duplicate_code": query.append(("code", "second-code"))
+    assert (await client.get("/oauth/callback", params=query, headers=headers)).status == 403
+    assert not connections.sso.exchanges
+    with pytest.raises(ConnectionRequired): connections.get("Ualice")
 
 
 @pytest.mark.parametrize("attack", ["missing_cookie", "wrong_cookie", "origin", "null_origin", "missing_origin", "csrf", "other_link"])
@@ -171,10 +198,9 @@ async def test_browser_session_rejection_does_not_consume_valid_link(service):
 @pytest.mark.asyncio
 async def test_non_admin_or_wrong_email_does_not_create_connection(service):
     client, connections, auth = service
-    path, data, headers = await form(service)
-    assert (await client.post(path, data=data, headers=headers)).status == 200
+    _, _, _, headers = await start(service)
     auth.denied = True
-    assert (await client.post(path, data={**data, "action": "check"}, headers=headers)).status == 403
+    assert (await callback(client, headers)).status == 403
     with pytest.raises(ConnectionRequired): connections.get("Ualice")
 
 
@@ -189,29 +215,16 @@ async def test_disconnect_invalidates_pending_links_and_connection(service):
 
 
 @pytest.mark.asyncio
-async def test_pending_login_and_team_selection_preserve_browser_binding(service):
+async def test_pending_login_can_reopen_only_in_original_browser(service):
     client, connections, _ = service
-    path, data, headers = await form(service)
-    await client.post(path, data=data, headers=headers)
-    # A stolen URL does not disclose an existing login code or poll it.
+    path, data, headers, _ = await start(service)
     assert (await client.get(path)).status == 403
-    assert (await client.get(path, headers=headers)).status == 200
-    connections.sso.result = SignInResult()
-    pending = await client.post(path, data={**data, "action": "check"}, headers=headers)
-    assert "Still waiting" in await pending.text()
-    connections.sso.result = SignInResult(user_id="alice", teams=(("t1", "Engineering"), ("t2", "Research<script>")))
-    choices = await client.post(path, data={**data, "action": "check"}, headers=headers)
-    assert choices.status == 200
-    assert "Choose your LiteLLM team" in await choices.text()
-    assert "Research&lt;script&gt;" in await choices.text()
-    assert "<script>" not in await choices.text()
-    bad_choice = await client.post(path, data={**data, "action": "check", "team_id": "not-my-team"}, headers=headers)
-    assert bad_choice.status == 403
-    assert len(connections.sso.polls) == 2
-    connections.sso.result = SignInResult(user_id="alice", credential="personal-session")
-    completed = await client.post(path, data={**data, "action": "check", "team_id": "t2"}, headers=headers)
-    assert completed.status == 200
-    assert connections.sso.polls == [None, None, "t2"]
+    reopened = await client.get(path, headers=headers)
+    assert reopened.status == 200
+    csrf = re.search('name="csrf" value="([^"]+)"', await reopened.text()).group(1)
+    assert csrf == data["csrf"]
+    assert (await client.post(path, data=data, headers=headers)).status == 200
+    assert connections.sso.starts == 1
 
 
 @pytest.mark.asyncio
@@ -225,16 +238,15 @@ async def test_duplicate_start_does_not_create_second_session(service):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("change", ["disconnect", "new_link"])
-async def test_disconnect_or_new_link_during_gateway_poll_cannot_reattach(service, change):
+async def test_disconnect_or_new_link_during_exchange_cannot_reattach(service, change):
     client, connections, _ = service
-    path, data, headers = await form(service)
-    await client.post(path, data=data, headers=headers)
-    async def poll(flow, team_id=None):
+    _, _, _, headers = await start(service)
+    async def exchange(flow, code):
         if change == "disconnect": connections.disconnect("Ualice")
         else: await connections.link("Ualice")
-        return SignInResult(user_id="alice", credential="stale-session")
-    connections.sso.poll = poll
-    result = await client.post(path, data={**data, "action": "check"}, headers=headers)
+        return SignInResult(user_id="alice", expires_at=time.time() + 3600, credential="stale-session")
+    connections.sso.exchange = exchange
+    result = await callback(client, headers)
     assert result.status == 410
     with pytest.raises(ConnectionRequired): connections.get("Ualice")
 
@@ -242,10 +254,9 @@ async def test_disconnect_or_new_link_during_gateway_poll_cannot_reattach(servic
 @pytest.mark.asyncio
 async def test_mismatched_user_id_cannot_save_session(service):
     client, connections, _ = service
-    path, data, headers = await form(service)
-    await client.post(path, data=data, headers=headers)
-    connections.sso.result = SignInResult(user_id="someone-else", credential="session")
-    assert (await client.post(path, data={**data, "action": "check"}, headers=headers)).status == 403
+    _, _, _, headers = await start(service)
+    connections.sso.result = SignInResult(user_id="someone-else", expires_at=time.time() + 3600, credential="session")
+    assert (await callback(client, headers)).status == 403
     with pytest.raises(ConnectionRequired): connections.get("Ualice")
 
 
@@ -254,20 +265,30 @@ def test_pending_flow_encrypted_and_survives_restart_but_not_expiry(tmp_path):
     path = str(tmp_path / "sso.sqlite3")
     db = store(path, key)
     token = db.issue("T:alice")
-    flow = DeviceFlow("cli-session", "ABCD-EFGH", time.time() + 600, "poll-secret-do-not-expose")
+    flow = OAuthFlow("client", time.time() + 600, "private-state", "pkce-secret-do-not-expose")
     db.save_pending(token, "browser-csrf", flow)
     db.db.close()
-    assert b"poll-secret-do-not-expose" not in (tmp_path / "sso.sqlite3").read_bytes()
+    assert b"pkce-secret-do-not-expose" not in (tmp_path / "sso.sqlite3").read_bytes()
     db = store(path, key)
-    assert db.pending(token)["flow"]["poll_secret"] == "poll-secret-do-not-expose"
+    assert db.pending(token)["flow"]["code_verifier"] == "pkce-secret-do-not-expose"
     db.save_pending(token, "browser-csrf", replace(flow, expires_at=0))
     with pytest.raises(ConnectionRequired): db.pending(token)
 
 
 @pytest.mark.asyncio
-async def test_existing_personal_key_survives_unfinished_sso(service):
+async def test_cancellation_preserves_old_connection_and_consumes_link(service):
     client, connections, _ = service
     connections.store.save(connections.owner("Ualice"), "alice", "existing-key")
-    path, data, headers = await form(service)
-    await client.post(path, data=data, headers=headers)
+    path, _, _, headers = await start(service)
     assert connections.get("Ualice").credential == "existing-key"
+    result = await client.get("/oauth/callback", params={"state": "private-state", "error": "access_denied"}, headers=headers)
+    assert result.status == 403 and "Connection cancelled" in await result.text()
+    assert connections.get("Ualice").credential == "existing-key"
+    assert (await client.get(path)).status == 410
+    assert not connections.sso.exchanges
+
+
+def test_expired_session_requires_reconnection():
+    db = store()
+    db.save("T:alice", "alice", "expired-session", time.time() - 1)
+    with pytest.raises(ConnectionRequired): db.get("T:alice")

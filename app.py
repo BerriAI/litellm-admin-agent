@@ -93,7 +93,7 @@ def build_listener(settings: Settings, journal: Journal, model=None, connect=mcp
             try:
                 link = await connections.link(event["user"])
                 answer = (f"Connect your own LiteLLM admin account here: <{link}|Connect account>\n"
-                          "This private link expires in 10 minutes. Sign in with LiteLLM SSO and confirm the code on the gateway. "
+                          "This private link expires in 10 minutes. Sign in with LiteLLM SSO and approve the connection. "
                           "Then send your request again.")
                 if pending_ts:
                     await client.chat_update(channel=channel, ts=pending_ts, text="Your account connection changed. The run stopped; inspect gateway state before retrying changes.")
@@ -159,7 +159,7 @@ async def main():
         authorizer = AdminAuthorizer(settings.gateway_url, settings.workspace, auth_client)
         journal = Journal(settings.db_path)
         connections = Connections(settings, ConnectionStore(journal.db, settings.encryption_key), authorizer,
-                                  slack_app.client, LiteLLMSSO(settings.gateway_url, auth_client))
+                                  slack_app.client, LiteLLMSSO(settings.gateway_url, settings.public_url, auth_client))
         runner = AgentRunner(settings, journal)
         slack_app.event("message")(build_listener(settings, journal, authorizer=authorizer,
                                                   connections=connections, runner=runner))

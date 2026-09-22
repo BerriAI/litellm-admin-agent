@@ -16,7 +16,7 @@ from aiohttp import web
 from cryptography.fernet import Fernet, InvalidToken
 
 from auth import AccessDenied, AuthorizationUnavailable
-from sso import DeviceFlow, SignInExpired
+from sso import OAuthFlow, SignInExpired
 
 
 class ConnectionRequired(Exception):
@@ -28,6 +28,7 @@ class Connection:
     user_id: str
     version: str
     credential: str = field(repr=False)
+    expires_at: float | None = None
 
 
 def digest(value: str) -> str:
@@ -75,12 +76,12 @@ class ConnectionStore:
             raise ConnectionRequired()
         return row[0]
 
-    def save(self, owner: str, user_id: str, credential: str) -> None:
+    def save(self, owner: str, user_id: str, credential: str, expires_at=None) -> None:
         with self.db:
-            self._save(owner, user_id, credential)
+            self._save(owner, user_id, credential, expires_at)
 
-    def _save(self, owner: str, user_id: str, credential: str) -> None:
-        payload = {"owner": owner, "user_id": user_id, "version": secrets.token_urlsafe(24), "credential": credential}
+    def _save(self, owner: str, user_id: str, credential: str, expires_at=None) -> None:
+        payload = {"owner": owner, "user_id": user_id, "version": secrets.token_urlsafe(24), "credential": credential, "expires_at": expires_at}
         encrypted = self.cipher.encrypt(json.dumps(payload).encode())
         self.db.execute("INSERT OR REPLACE INTO connections VALUES(?,?)", (owner, encrypted))
 
@@ -93,27 +94,27 @@ class ConnectionStore:
             data = json.loads(self.cipher.decrypt(row[0], ttl=600))
             if data["owner"] != owner or data["link"] != digest(token):
                 raise ValueError()
-            if data["flow"]["expires_at"] <= time.time():
+            if data["flow"]["expires_at"] <= time.time() or "code_verifier" not in data["flow"]:
                 raise ValueError()
             return data
         except (InvalidToken, ValueError, KeyError, TypeError):
             raise ConnectionRequired() from None
 
-    def save_pending(self, token: str, csrf: str, flow: DeviceFlow, teams=(), user_id=""):
+    def save_pending(self, token: str, csrf: str, flow: OAuthFlow):
         owner = self.owner(token)  # Check again after any awaited gateway request.
         payload = {"owner": owner, "link": digest(token), "csrf": csrf,
-                   "flow": asdict(flow), "teams": teams, "user_id": user_id}
+                   "flow": asdict(flow)}
         encrypted = self.cipher.encrypt(json.dumps(payload).encode())
         with self.db:
             self.db.execute("INSERT OR REPLACE INTO connection_sso VALUES(?,?)", (digest(token), encrypted))
 
-    def finish(self, token: str, owner: str, user_id: str, credential: str):
+    def finish(self, token: str, owner: str, user_id: str, credential: str, expires_at=None):
         # No await between the final link check and transaction: disconnect or
         # a newer connect link must invalidate an in-flight login as well.
         if self.owner(token) != owner:
             raise ConnectionRequired()
         with self.db:
-            self._save(owner, user_id, credential)
+            self._save(owner, user_id, credential, expires_at)
             self.db.execute("DELETE FROM connection_links WHERE token_hash=?", (digest(token),))
             self.db.execute("DELETE FROM connection_sso WHERE token_hash=?", (digest(token),))
 
@@ -125,8 +126,11 @@ class ConnectionStore:
             data = json.loads(self.cipher.decrypt(row[0]))
             if data["owner"] != owner:
                 raise ValueError()
-            return Connection(data["user_id"], data["version"], data["credential"])
-        except (InvalidToken, ValueError, KeyError):
+            expires = data.get("expires_at")
+            if expires is not None and expires <= time.time():
+                raise ConnectionRequired()
+            return Connection(data["user_id"], data["version"], data["credential"], expires)
+        except (InvalidToken, ValueError, KeyError, TypeError):
             raise ConnectionRequired() from None
 
     def disconnect(self, owner: str) -> None:
@@ -145,6 +149,7 @@ PAGE_HEADERS = {
     "Content-Security-Policy": "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
 }
 COOKIE = "__Host-litellm-connect"
+OAUTH_COOKIE = "__Host-litellm-oauth"
 
 
 def page(title: str, body: str, status=200):
@@ -163,7 +168,6 @@ class Connections:
         self.authorizer = authorizer
         self.slack = slack
         self.sso = sso
-        # Bounded locks serialize one-use polls on this single-instance service.
         self._locks = [asyncio.Lock() for _ in range(64)]
 
     def owner(self, slack_user):
@@ -182,6 +186,7 @@ class Connections:
 
     def add_routes(self, app):
         app.router.add_get("/connect.js", self.script)
+        app.router.add_get("/oauth/callback", self.callback)
         app.router.add_get("/connect/{token}", self.show)
         app.router.add_post("/connect/{token}", self.connect)
 
@@ -193,23 +198,25 @@ class Connections:
     async def show(self, request):
         token = request.match_info["token"]
         try:
+            self.store.owner(token)
             pending = self.store.pending(token)
             if pending:
-                cookie = self._browser_cookie(request, token)
-                if not hmac.compare_digest(cookie["csrf"], pending["csrf"]):
+                browser = self._browser_cookie(request, token)
+                if not hmac.compare_digest(browser["csrf"], pending["csrf"]):
                     raise AccessDenied()
-                return self._pending_page(pending)
+                csrf = browser["csrf"]
+            else:
+                csrf = secrets.token_urlsafe(32)
         except ConnectionRequired:
-            return page("Link expired", "<p>Send <strong>connect</strong> to LiteLLM Admin in Slack for a new private link.</p>", 410)
+            return self._expired()
         except AccessDenied:
             return self._browser_error()
-        csrf = secrets.token_urlsafe(32)
         cookie = self.store.cipher.encrypt(json.dumps({"link": digest(token), "csrf": csrf}).encode()).decode()
-        result = page("Connect your LiteLLM account", f"""<p>Sign in with your BerriAI account through LiteLLM SSO. Your gateway email must match your Slack email, and your account must be a LiteLLM proxy admin.</p>
-<p>You’ll confirm a short verification code on the gateway. Model requests and admin actions will use your own account. Your session is encrypted before it is saved.</p>
-<form method="post" data-sso-action="start"><input type="hidden" name="csrf" value="{csrf}">
+        result = page("Connect your LiteLLM account", f"""<p>Sign in through your LiteLLM gateway using the same email as Slack. Your account must be a LiteLLM proxy admin.</p>
+<p>LiteLLM will ask you to approve this app, then return you here automatically. Model requests and admin actions will use your own account.</p>
+<form method="post"><input type="hidden" name="csrf" value="{csrf}">
 <button type="submit" name="action" value="start">Continue with LiteLLM SSO</button></form>
-<small>No API key needed. Send “disconnect” in Slack to remove the saved session. When your session expires, send “connect” to sign in again.</small>""")
+<small>No API key or terminal code needed. Your session is encrypted before it is saved. Send “disconnect” in Slack to remove it, or “connect” when you need to sign in again.</small>""")
         result.set_cookie(COOKIE, cookie, secure=True, httponly=True, samesite="Strict", max_age=600, path="/")
         return result
 
@@ -223,31 +230,21 @@ class Connections:
             raise AccessDenied() from None
 
     def _browser_error(self):
-        return page("Please reopen your connection link", "<p>Your browser session couldn’t be verified. Use the same browser tab where you started signing in, or send <strong>connect</strong> in Slack for a new private link.</p>", 403)
+        return page("Please reopen your connection link", "<p>Your browser session couldn’t be verified. Send <strong>connect</strong> in Slack for a new private link and use the same browser throughout sign-in.</p>", 403)
 
-    def _pending_page(self, pending, *, waiting=False):
-        csrf = html.escape(pending["csrf"], quote=True)
-        if pending["teams"]:
-            options = "".join(f'<option value="{html.escape(t, quote=True)}">{html.escape(alias)} ({html.escape(t)})</option>'
-                              for t, alias in pending["teams"])
-            return page("Choose your LiteLLM team", f"""<p>Choose the team to use for model access and usage attribution. Your current gateway admin permissions will still be verified.</p>
-<form method="post" data-sso-action="team"><input type="hidden" name="csrf" value="{csrf}">
-<label for="team_id">Your team</label><select id="team_id" name="team_id" required>{options}</select>
-<button type="submit" name="action" value="check">Finish connecting</button></form>""")
-        flow = DeviceFlow(**pending["flow"])
-        url = html.escape(self.sso.sign_in_url(flow), quote=True)
-        notice = "<p><strong>Still waiting for sign-in.</strong> Complete SSO and confirm the code in the gateway tab, then try again.</p>" if waiting else ""
-        return page("Sign in to LiteLLM", f"""{notice}<p>Open LiteLLM below and sign in with the same email you use in Slack. When it asks for a verification code, enter:</p>
-<p><code>{html.escape(flow.user_code)}</code></p>
-<a class="button" data-sso-link href="{url}" target="_blank" rel="noopener noreferrer">Open LiteLLM SSO</a>
-<p>SSO opens in a new tab using the sign-in provider configured on your gateway. This page will connect automatically after you confirm the code. If asked, return here to choose your team.</p>
-<form method="post" data-sso-action="check"><input type="hidden" name="csrf" value="{csrf}">
-<button type="submit" name="action" value="check">I’ve signed in — finish connecting</button></form>
-<small>This sign-in expires after 10 minutes. Only enter this code on your LiteLLM gateway.</small>""")
+    def _expired(self):
+        return page("Link expired or already used", "<p>Send <strong>connect</strong> to LiteLLM Admin in Slack for a new private link.</p>", 410)
+
+    def _failure(self, exc):
+        if isinstance(exc, (ConnectionRequired, SignInExpired)):
+            return self._expired()
+        if isinstance(exc, AuthorizationUnavailable):
+            logging.warning("Account connection rejected (authorization_unavailable)")
+            return page("Couldn’t verify access", "<p>The gateway or Slack is temporarily unavailable. Send <strong>connect</strong> in Slack for a new link and try again.</p>", 503)
+        logging.warning("Account connection rejected (gateway_account)")
+        return page("Couldn’t connect this account", "<p>Sign in to an active LiteLLM proxy-admin account with the same email as Slack. Send <strong>connect</strong> in Slack for a new link.</p>", 403)
 
     async def connect(self, request):
-        # All starts, polls, team choices, and credential saves require this
-        # browser binding. Even possession of the private URL is insufficient.
         try:
             if request.headers.get("Origin") != self.settings.public_url or request.content_type != "application/x-www-form-urlencoded":
                 raise AccessDenied()
@@ -257,57 +254,62 @@ class Connections:
             if not hmac.compare_digest(cookie["csrf"], str(form.get("csrf", ""))):
                 raise AccessDenied()
         except (AccessDenied, InvalidToken, ValueError, KeyError, TypeError):
-            logging.warning("Account connection rejected (browser_session)")
             return self._browser_error()
+        if form.get("action") != "start":
+            return self._expired()
         async with self._locks[int(digest(token)[:8], 16) % len(self._locks)]:
-            return await self._connect(token, cookie["csrf"], form)
-
-    async def _connect(self, token, csrf, form):
-        try:
-            owner = self.store.owner(token)
-            workspace, slack_user = owner.split(":", 1)
-            if workspace != self.settings.workspace:
-                raise AccessDenied()
-            pending = self.store.pending(token)
-            if pending and not hmac.compare_digest(pending["csrf"], csrf):
-                return self._browser_error()
-            action = form.get("action")
-            if action == "start":
-                if not pending:
+            try:
+                owner = self.store.owner(token)
+                workspace, slack_user = owner.split(":", 1)
+                if workspace != self.settings.workspace:
+                    raise AccessDenied()
+                pending = self.store.pending(token)
+                if pending and not hmac.compare_digest(pending["csrf"], cookie["csrf"]):
+                    return self._browser_error()
+                if pending:
+                    flow = OAuthFlow(**pending["flow"])
+                else:
                     await self.authorizer.slack_email(slack_user, self.slack)
                     flow = await self.sso.start()
-                    self.store.save_pending(token, csrf, flow)
-                    pending = self.store.pending(token)
-                return self._pending_page(pending)
-            if action != "check" or not pending:
-                return page("Start with LiteLLM SSO", "<p>Reopen your connection link and choose <strong>Continue with LiteLLM SSO</strong>.</p>", 400)
-            team_id = form.get("team_id")
-            if team_id is not None and team_id not in {t[0] for t in pending["teams"]}:
+                    self.store.save_pending(token, cookie["csrf"], flow)
+                url = html.escape(self.sso.sign_in_url(flow), quote=True)
+                result = page("Opening LiteLLM sign-in", f'<p>Redirecting to your gateway’s sign-in page…</p><a class="button" data-oauth-redirect href="{url}">Continue to LiteLLM</a>')
+                binding = self.store.cipher.encrypt(json.dumps({"token": token, "csrf": cookie["csrf"], "state": flow.state}).encode()).decode()
+                result.set_cookie(OAUTH_COOKIE, binding, secure=True, httponly=True, samesite="Lax", max_age=600, path="/")
+                return result
+            except (AccessDenied, AuthorizationUnavailable, ConnectionRequired, SignInExpired) as exc:
+                return self._failure(exc)
+
+    async def callback(self, request):
+        try:
+            binding = json.loads(self.store.cipher.decrypt(request.cookies.get(OAUTH_COOKIE, "").encode(), ttl=600))
+            if len(request.query.getall("state", [])) != 1 or not hmac.compare_digest(binding["state"], request.query["state"]):
                 raise AccessDenied()
-            if pending["teams"] and not team_id:
-                return self._pending_page(pending)
-            flow = DeviceFlow(**pending["flow"])
-            result = await self.sso.poll(flow, team_id)
-            if pending["user_id"] and result.user_id and pending["user_id"] != result.user_id:
-                raise AccessDenied()
-            if result.teams:
-                self.store.save_pending(token, csrf, flow, result.teams, result.user_id)
-                return self._pending_page(self.store.pending(token))
-            if not result.credential:
-                return self._pending_page(pending, waiting=True)
-            principal = await self.authorizer.require_slack_admin(slack_user, self.slack, result.credential)
-            if principal.user_id != result.user_id:
-                raise AccessDenied()
-            self.store.finish(token, owner, principal.user_id, result.credential)
-            result = page("Account connected", "<p>Return to your private Slack conversation with LiteLLM Admin and send your request again.</p>")
-            result.del_cookie(COOKIE, path="/", secure=True, httponly=True, samesite="Strict")
-            return result
-        except AuthorizationUnavailable:
-            logging.warning("Account connection rejected (authorization_unavailable)")
-            return page("Couldn’t verify access", "<p>The gateway or Slack is temporarily unavailable. Send <strong>connect</strong> in Slack for a new link and try again.</p>", 503)
-        except (ConnectionRequired, SignInExpired):
-            logging.warning("Account connection rejected (expired_or_used_link)")
-            return page("Link expired or already used", "<p>Send <strong>connect</strong> to LiteLLM Admin in Slack for a new private link.</p>", 410)
-        except AccessDenied:
-            logging.warning("Account connection rejected (gateway_account)")
-            return page("Couldn’t connect this account", "<p>Sign in to an active LiteLLM proxy-admin account with the same email as Slack. Send <strong>connect</strong> in Slack for a new link.</p>", 403)
+            token = binding["token"]
+        except (AccessDenied, InvalidToken, ValueError, KeyError, TypeError):
+            return self._browser_error()
+        async with self._locks[int(digest(token)[:8], 16) % len(self._locks)]:
+            try:
+                owner = self.store.owner(token)
+                workspace, slack_user = owner.split(":", 1)
+                pending = self.store.pending(token)
+                if (workspace != self.settings.workspace or not pending
+                        or not hmac.compare_digest(pending["csrf"], binding["csrf"])
+                        or not hmac.compare_digest(pending["flow"]["state"], binding["state"])):
+                    raise AccessDenied()
+                if "error" in request.query:
+                    self.store.owner(token, consume=True)
+                    return page("Connection cancelled", "<p>Your existing connection has not changed. Send <strong>connect</strong> in Slack when you want to sign in.</p>", 403)
+                if len(request.query.getall("code", [])) != 1:
+                    raise AccessDenied()
+                signed_in = await self.sso.exchange(OAuthFlow(**pending["flow"]), request.query["code"])
+                principal = await self.authorizer.require_slack_admin(slack_user, self.slack, signed_in.credential)
+                if principal.user_id != signed_in.user_id:
+                    raise AccessDenied()
+                self.store.finish(token, owner, principal.user_id, signed_in.credential, signed_in.expires_at)
+                result = page("Account connected", "<p>Return to your private Slack conversation with LiteLLM Admin and send your request again.</p>")
+                result.del_cookie(COOKIE, path="/", secure=True, httponly=True, samesite="Strict")
+                result.del_cookie(OAUTH_COOKIE, path="/", secure=True, httponly=True, samesite="Lax")
+                return result
+            except (AccessDenied, AuthorizationUnavailable, ConnectionRequired, SignInExpired) as exc:
+                return self._failure(exc)

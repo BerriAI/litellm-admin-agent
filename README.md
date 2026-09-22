@@ -15,9 +15,9 @@ The dedicated `personal_admin` MCP registration has 62 operations and **no store
 Any BerriAI member can find **LiteLLM Admin** in Slack Apps and open a DM.
 
 1. Send **connect** and open the private link (valid for ten minutes).
-2. Choose **Continue with LiteLLM SSO**. It opens the gateway’s configured SSO provider directly in a new tab (Google on the sandbox; provider choice stays with LiteLLM).
-3. Sign in using the same email as Slack. Enter the short verification code from the connection page when LiteLLM asks for it. The gateway currently labels this page “CLI Login”.
-4. The connection page finishes automatically after verification. If you belong to multiple teams, return to it and choose one for model access and usage attribution. The finish button remains available if JavaScript is disabled.
+2. Choose **Continue with LiteLLM SSO**. The browser opens the gateway’s configured SSO provider (Google on the sandbox; provider choice stays with LiteLLM).
+3. Sign in using the same email as Slack, choose the team for model usage if prompted, and approve the connection on LiteLLM.
+4. LiteLLM returns to the connection page automatically. No terminal verification code is required.
 5. Return to Slack and send your request.
 
 No API key is entered. The agent verifies the resulting session against the gateway’s current `proxy_admin` role and an exact email match to the verified Slack profile before saving it encrypted. Send **disconnect** to delete the saved session and invalidate pending links/sign-ins. An expired session requires another SSO sign-in. Existing saved personal-key connections remain usable until replaced or disconnected.
@@ -32,9 +32,11 @@ Gateway callers supply their own LiteLLM bearer on each request and do not need 
 
 Gateway registry metadata may be visible to non-admins. The backend independently blocks their operations; registration alone is not an admin-only UI visibility control.
 
-Sign-in uses LiteLLM’s device flow (`POST /sso/cli/start`, browser SSO, then `/sso/cli/poll/{login_id}`), the same flow as `lite login`. The polling secret stays encrypted on Render; the browser only sees the verification code and gateway login URL. The original connection page polls every three seconds while sign-in is pending, with strict Origin, CSRF and browser binding. Polling stops at a team choice, success, or error; native forms remain available without JavaScript. Team selections are limited to memberships returned by LiteLLM. A new connect link or disconnect invalidates an in-flight login before it can save a credential. No hosted OAuth redirect exception, shared admin key, IdP client secret, or gateway configuration change is needed.
+Sign-in uses LiteLLM’s authorization-code flow: `/register`, `/authorize` with the gateway URL as `resource`, and `/token` with S256 PKCE. The gateway handles its own SSO provider, consent, and team selection. The app keeps the verifier and pending state encrypted, binds the callback to an HttpOnly Secure SameSite=Lax cookie, and checks state before exchanging a code. Starting sign-in requires a separate SameSite=Strict cookie, matching Origin, and CSRF token. A new connect link or disconnect invalidates an in-flight login before it can save a credential.
 
-This flow issues a time-limited personal session, not a refresh token. LiteLLM defaults to 24 hours; the gateway’s `CLI_JWT_EXPIRATION_HOURS` / `LITELLM_CLI_JWT_EXPIRATION_HOURS` setting controls the actual lifetime. The agent does not extend the lifetime or silently generate a long-lived key. Expired sessions prompt the user to reconnect. Disconnect removes the agent’s saved copy; the gateway-issued session expires on its own.
+The gateway must support hosted proxy-API callbacks and set `LITELLM_PROXY_API_OAUTH_REDIRECT_URIS=https://litellm-admin-agent.onrender.com/oauth/callback`. This is an exact HTTPS callback allowlist, separate from MCP callback settings. No wildcards, query strings, shared admin key, or separate IdP client secret are needed. An unconfigured gateway rejects this flow instead of falling back to CLI sign-in.
+
+The app stores only the time-limited personal access session. It revokes and discards the optional refresh token; a failed revocation is logged without secrets and never makes the refresh token available to the agent. LiteLLM defaults to 24 hours; the gateway’s `CLI_JWT_EXPIRATION_HOURS` / `LITELLM_CLI_JWT_EXPIRATION_HOURS` setting controls the actual lifetime. Expired sessions require SSO again. Disconnect removes the agent’s saved copy; the gateway-issued session expires on its own.
 
 ## What it can do
 
@@ -52,8 +54,8 @@ Generated virtual keys are removed from model tool results and sent separately t
 - `auth.py`: Slack profile/email matching and live LiteLLM role checks.
 - `admin_api.py`: role-gated backend for the shared MCP server; selected routes only and no shared credentials.
 - `connections.py`: private SSO connection pages, CSRF/browser protection, expiring links and encrypted sessions.
-- `sso.py`: LiteLLM device sign-in client and validated team selection.
-- `connect.js`: opens gateway SSO directly from the sign-in button and completes the browser connection after verification.
+- `sso.py`: LiteLLM authorization-code client with S256 PKCE and fixed gateway/callback URLs.
+- `connect.js`: navigates to gateway SSO after the protected sign-in form submission.
 - `agent.py`: configuration, MCP connection and model instructions.
 - `engine.py`: shared Agents SDK runner and conversation isolation.
 - `core.py`: tool validation, secret handling and persistent action journal.
@@ -81,7 +83,7 @@ python app.py --web
 
 Browser verification also covers native form submission: `Referrer-Policy: same-origin` preserves the same-origin POST header required by CSRF protection. Browser-session, expired-link, and account-verification failures have separate messages; logs record only the failure category.
 
-Tests cover SSO pending/expired sessions, team selection, malformed gateway responses, encrypted restart persistence, link replay and disconnect races. They also exercise the real Agents SDK loop, caller-credential propagation to both clients, two-user isolation, role revocation, disconnect during a run, uncertain mutation handling, HTTP A2A requests, CSRF/browser binding, expired/replayed links, and encrypted persistence.
+Tests cover callback state/cookie binding, PKCE, malformed gateway responses, expired sessions, encrypted restart persistence, link replay and disconnect races. They also exercise the real Agents SDK loop, caller-credential propagation to both clients, two-user isolation, role revocation, disconnect during a run, uncertain mutation handling, HTTP A2A requests, CSRF/browser binding, expired/replayed links, and encrypted persistence.
 
 ## Render
 
