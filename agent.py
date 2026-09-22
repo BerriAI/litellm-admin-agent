@@ -88,7 +88,7 @@ class Settings:
     public_url: str = ""
     slack_enabled: bool = True
     connection_auth_mode: str = "sso"
-    read_only: bool = True
+    read_only: bool = False
     max_pending_requests: int = 8
     queue_timeout_seconds: float = 30
     run_timeout_seconds: float = 180
@@ -118,7 +118,7 @@ class Settings:
             public_url=(os.getenv("AGENT_PUBLIC_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").rstrip("/"),
             slack_enabled=env_bool("SLACK_ENABLED", True),
             connection_auth_mode=os.getenv("CONNECTION_AUTH_MODE", "sso"),
-            read_only=env_bool("ADMIN_READ_ONLY", True),
+            read_only=env_bool("ADMIN_READ_ONLY", False),
             max_pending_requests=int(os.getenv("MAX_PENDING_REQUESTS", "8")),
             queue_timeout_seconds=float(os.getenv("QUEUE_TIMEOUT_SECONDS", "30")),
             run_timeout_seconds=float(os.getenv("RUN_TIMEOUT_SECONDS", "180")),

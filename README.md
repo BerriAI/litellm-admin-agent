@@ -4,7 +4,7 @@ Manage your LiteLLM gateway from a Slack DM.
 
 - Ask about keys, teams, budgets and spending.
 - Connect with your own LiteLLM admin account.
-- Start in read-only mode. Enable changes after testing.
+- Create keys and update team budgets when you ask.
 - Host one agent for one gateway and one Slack workspace.
 
 ## Before you start
@@ -119,11 +119,11 @@ python doctor.py
 - Check that a gateway admin can use the agent and that a regular gateway user cannot.
 - Send **disconnect** to remove your saved connection. To revoke the credential itself, revoke it in LiteLLM.
 
-## Enable changes
+## Optional read-only mode
 
-- Keep `ADMIN_READ_ONLY=true` while you check the setup.
-- Test your model and write actions on a test gateway. Set `ADMIN_READ_ONLY=false` and redeploy to let admins create keys or change budgets and teams.
-- In write mode, users can request changes without a separate approval step. Check gateway state before retrying a change after a timeout.
+- After connecting your admin account, you can request changes without an extra setup step.
+- Set `ADMIN_READ_ONLY=true` and redeploy if you want to restrict your deployment to lookups.
+- Check gateway state before retrying a change after a timeout.
 
 ## More help
 

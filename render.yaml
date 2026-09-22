@@ -39,7 +39,7 @@ services:
       - key: CONNECTION_AUTH_MODE
         value: api_key
       - key: ADMIN_READ_ONLY
-        value: 'true'
+        value: 'false'
       - key: CREDENTIAL_ENCRYPTION_KEY
         sync: false
       - key: ADMIN_TOOL_NAMES

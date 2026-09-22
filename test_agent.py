@@ -83,7 +83,7 @@ class FakeConnections:
 
 def settings():
     return Settings("Tberri", "https://example.com/personal_admin/mcp", "personal_admin",
-                    frozenset({"create_key"}), "https://example.com/v1", "test", "unused", "unused", ":memory:", read_only=False)
+                    frozenset({"create_key"}), "https://example.com/v1", "test", "unused", "unused", ":memory:")
 
 
 @pytest.mark.parametrize("body", [

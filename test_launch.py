@@ -38,7 +38,7 @@ def test_generated_secrets_are_private_unique_and_never_overwritten(tmp_path):
     assert one["CREDENTIAL_ENCRYPTION_KEY"] != two["CREDENTIAL_ENCRYPTION_KEY"]
     Fernet(one["CREDENTIAL_ENCRYPTION_KEY"].encode())
     assert len(one["ADMIN_AGENT_SERVICE_TOKEN"]) >= 32
-    assert one["ADMIN_READ_ONLY"] == "true"
+    assert one["ADMIN_READ_ONLY"] == "false"
     assert one["CONNECTION_AUTH_MODE"] == "api_key"
     previous = first.read_bytes()
     with pytest.raises(FileExistsError): initialize(first)
@@ -66,6 +66,25 @@ def test_headless_mode_does_not_require_slack_tokens(tmp_path):
 def test_invalid_boolean_does_not_silently_disable_a_guard(monkeypatch):
     monkeypatch.setenv("ADMIN_READ_ONLY", "treu")
     with pytest.raises(ValueError, match="ADMIN_READ_ONLY"): Settings.read()
+
+
+@pytest.mark.parametrize("mode,expected_writes", [(None, 1), ("false", 1), ("true", 0)])
+@pytest.mark.asyncio
+async def test_runtime_default_allows_admin_actions_and_read_only_is_opt_in(monkeypatch, mode, expected_writes):
+    if mode is None:
+        monkeypatch.delenv("ADMIN_READ_ONLY", raising=False)
+    else:
+        monkeypatch.setenv("ADMIN_READ_ONLY", mode)
+    config = replace(settings(), read_only=Settings.read().read_only)
+    mcp = FakeMCP()
+    @asynccontextmanager
+    async def connect(config, credential): yield mcp
+    async def verify(): pass
+    runner = AgentRunner(config, Journal(":memory:"), ScriptedModel(), connect)
+    outcome = await runner.execute("Create a key for Engineering", Principal("admin", "", "gateway", "admin"),
+                                   "chat", "event", verify, "personal-admin-key")
+    assert len(mcp.calls) == expected_writes
+    assert bool(outcome.secrets) == bool(expected_writes)
 
 
 @pytest.mark.asyncio
