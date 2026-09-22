@@ -42,7 +42,8 @@ Back up first. Pin the reviewed commit/image, rebuild, keep the state volume and
 This release preserves the existing credential tables but changes deployment templates:
 
 - Replace BerriAI-specific workspace/gateway/model values with your own.
-- Existing SSO deployments should explicitly keep `CONNECTION_AUTH_MODE=sso`; the new templates select personal-key mode for new installations.
+- Keep `CONNECTION_AUTH_MODE=sso` for existing SSO deployments. The Render Blueprint asks for a login method on creation and uses `sync: false` to preserve your choice on later updates. The Docker `.env` template starts with `api_key`.
+- If you synced an earlier Render Blueprint that set `CONNECTION_AUTH_MODE=api_key`, restore `sso` in the service’s **Environment** tab and redeploy. Updating the Blueprint alone does not undo that setting.
 - `ADMIN_READ_ONLY` defaults to false, so connected admins can request changes. Set it to true for a read-only deployment. If you deployed the earlier template with `ADMIN_READ_ONLY=true`, remove that setting or change it to false to use the new default behavior.
 - The image now includes all connection/SSO/backend assets. Compose injects only runtime configuration.
 - Do not sync the generic Render blueprint over an existing service without reviewing its environment changes. Keep its current URLs, tokens, encryption key and state disk.
