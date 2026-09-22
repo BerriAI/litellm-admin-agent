@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import html
 import json
+import logging
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -88,7 +89,10 @@ class ConnectionStore:
 
 
 PAGE_HEADERS = {
-    "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+    # no-referrer makes browsers serialize Origin as "null" on form POSTs.
+    # same-origin preserves our CSRF origin check without sending the private
+    # connection URL as a referrer to another site.
+    "Cache-Control": "no-store", "Referrer-Policy": "same-origin",
     "X-Frame-Options": "DENY", "X-Content-Type-Options": "nosniff",
     "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
 }
@@ -148,6 +152,8 @@ class Connections:
         return result
 
     async def connect(self, request):
+        # Validate the browser before consuming the link or checking credentials.
+        # Session errors must not tell the user their gateway key is wrong.
         try:
             if request.headers.get("Origin") != self.settings.public_url or request.content_type != "application/x-www-form-urlencoded":
                 raise AccessDenied()
@@ -157,6 +163,10 @@ class Connections:
             if (not hmac.compare_digest(cookie["link"], digest(token))
                     or not hmac.compare_digest(cookie["csrf"], str(form.get("csrf", "")))):
                 raise AccessDenied()
+        except (AccessDenied, InvalidToken, ValueError, KeyError, TypeError):
+            logging.warning("Account connection rejected (browser_session)")
+            return page("Please reopen your connection link", "<p>Your browser session couldn’t be verified. Open the <strong>Connect account</strong> link from Slack again and submit the form in the same browser tab.</p>", 403)
+        try:
             owner = self.store.owner(token, consume=True)
             workspace, slack_user = owner.split(":", 1)
             if workspace != self.settings.workspace:
@@ -168,6 +178,11 @@ class Connections:
             result.del_cookie(COOKIE, path="/", secure=True, httponly=True, samesite="Strict")
             return result
         except AuthorizationUnavailable:
+            logging.warning("Account connection rejected (authorization_unavailable)")
             return page("Couldn’t verify access", "<p>The gateway or Slack is temporarily unavailable. Send <strong>connect</strong> in Slack for a new link and try again.</p>", 503)
-        except (AccessDenied, ConnectionRequired, InvalidToken, ValueError, KeyError, TypeError):
+        except ConnectionRequired:
+            logging.warning("Account connection rejected (expired_or_used_link)")
+            return page("Link expired or already used", "<p>Send <strong>connect</strong> to LiteLLM Admin in Slack for a new private link.</p>", 410)
+        except AccessDenied:
+            logging.warning("Account connection rejected (gateway_account)")
             return page("Couldn’t connect this account", "<p>Use your own active LiteLLM proxy-admin key with the same email as Slack. Send <strong>connect</strong> in Slack for a new link.</p>", 403)

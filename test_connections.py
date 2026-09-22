@@ -86,6 +86,9 @@ async def form(service):
     response = await client.get(path)
     assert response.status == 200
     assert response.headers["Cache-Control"] == "no-store"
+    # Native browser POSTs turn Origin into "null" under no-referrer, which
+    # would break the origin check despite a valid cookie and CSRF token.
+    assert response.headers["Referrer-Policy"] == "same-origin"
     assert "frame-ancestors 'none'" in response.headers["Content-Security-Policy"]
     cookie = response.cookies[COOKIE]
     assert cookie["secure"] and cookie["httponly"] and cookie["samesite"] == "Strict"
@@ -104,11 +107,13 @@ async def test_connection_requires_browser_and_origin_then_stores_only_verified_
     assert "alice-personal-secret" not in await result.text()
     assert connections.get("Ualice").credential == "alice-personal-secret"
     assert auth.calls == [("Ualice", "alice-personal-secret")]
-    assert (await client.post(path, data=data, headers=headers)).status == 403
+    replay = await client.post(path, data=data, headers=headers)
+    assert replay.status == 410
+    assert "Link expired or already used" in await replay.text()
     assert len(auth.calls) == 1
 
 
-@pytest.mark.parametrize("attack", ["missing_cookie", "wrong_cookie", "origin", "missing_origin", "csrf", "other_link"])
+@pytest.mark.parametrize("attack", ["missing_cookie", "wrong_cookie", "origin", "null_origin", "missing_origin", "csrf", "other_link"])
 @pytest.mark.asyncio
 async def test_csrf_and_mismatched_browser_never_verify_or_store_key(service, attack):
     client, connections, auth = service
@@ -116,12 +121,25 @@ async def test_csrf_and_mismatched_browser_never_verify_or_store_key(service, at
     if attack == "missing_cookie": headers.pop("Cookie")
     elif attack == "wrong_cookie": headers["Cookie"] = f"{COOKIE}=invalid"
     elif attack == "origin": headers["Origin"] = "https://attacker.example"
+    elif attack == "null_origin": headers["Origin"] = "null"
     elif attack == "missing_origin": headers.pop("Origin")
     elif attack == "csrf": data["csrf"] = "wrong"
     elif attack == "other_link": path = "/connect/" + connections.store.issue(connections.owner("Ubob"))
-    assert (await client.post(path, data=data, headers=headers)).status == 403
+    rejected = await client.post(path, data=data, headers=headers)
+    assert rejected.status == 403
+    assert "Please reopen your connection link" in await rejected.text()
     assert not auth.calls
     with pytest.raises(ConnectionRequired): connections.get("Ualice")
+
+
+@pytest.mark.asyncio
+async def test_browser_session_rejection_does_not_consume_valid_link(service):
+    client, connections, auth = service
+    path, data, headers = await form(service)
+    assert (await client.post(path, data=data, headers={**headers, "Origin": "null"})).status == 403
+    assert not auth.calls
+    assert (await client.post(path, data=data, headers=headers)).status == 200
+    assert connections.get("Ualice").credential == "alice-personal-secret"
 
 
 @pytest.mark.asyncio

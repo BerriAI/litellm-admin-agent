@@ -4,7 +4,7 @@ A shared admin assistant for BerriAI Slack and the LiteLLM sandbox gateway. It u
 
 ## Deployment status
 
-Private source: https://github.com/BerriAI/litellm-admin-agent. The personal-account implementation passes 88 automated tests. The service is live at https://litellm-admin-agent.onrender.com on Render Starter, with Slack enabled and a persistent disk. The old Mac listener is stopped and its LaunchAgent is disabled to prevent duplicate processing after reboot.
+Private source: https://github.com/BerriAI/litellm-admin-agent. The personal-account implementation passes 90 automated tests. The service is live at https://litellm-admin-agent.onrender.com on Render Starter, with Slack enabled and a persistent disk. The old Mac listener is stopped and its LaunchAgent is disabled to prevent duplicate processing after reboot.
 
 Render service: `srv-daoudt5g1s2s738nju1g`. Blueprint: `exs-daou10ijnfac73e6q0g0`. Gateway agent: `litellm-admin`, ID `b55a5cc9-bb4d-4f87-8969-20bb4439494d`. Invoke through `https://gateway.litellm-sandbox.ai/a2a/b55a5cc9-bb4d-4f87-8969-20bb4439494d` using your own bearer credential.
 
@@ -63,6 +63,8 @@ python app.py --web
 ```
 
 `--check` validates configuration and Slack workspace/profile access without posting or invoking administrative tools. It does not exercise a personal credential or LLM request. Optional `--list-tools` uses the explicit setup-only `LITELLM_SETUP_KEY`; this variable is not read by normal service startup. `configure_mcp.py --apply` and `register_agent.py --apply` use a private local `LITELLM_ADMIN_KEY` for one-time registration only. Do not add that setup credential to Render.
+
+Browser verification also covers native form submission: `Referrer-Policy: same-origin` preserves the same-origin POST header required by CSRF protection. Browser-session, expired-link, and account-verification failures have separate messages; logs record only the failure category.
 
 Tests exercise the real Agents SDK loop, caller-credential propagation to both clients, two-user isolation, role revocation, disconnect during a run, uncertain mutation handling, HTTP A2A requests, CSRF/browser binding, expired/replayed links, and encrypted persistence.
 
