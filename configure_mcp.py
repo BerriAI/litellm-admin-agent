@@ -3,24 +3,25 @@ import argparse
 import json
 import os
 from pathlib import Path
-from urllib.parse import urlparse
 
 import httpx2
-from dotenv import load_dotenv
+from dotenv import load_dotenv, set_key
+from agent import trusted_url
 
 
 ROOT = Path(__file__).parent
 
 
 def registration(spec: dict, base_url: str, agent_url: str) -> dict:
-    parsed = urlparse(agent_url)
-    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
-        raise ValueError("Configure the HTTPS admin agent URL without credentials or query parameters")
+    trusted_url(agent_url, "AGENT_PUBLIC_URL", origin_only=True)
+    trusted_url(base_url, "LITELLM_BASE_URL", origin_only=True)
     inventory = json.loads((ROOT / "admin-operations.json").read_text())
     operation_ids = []
     for entry in inventory["operations"]:
         op = spec.get("paths", {}).get(entry["path"], {}).get(entry["method"].lower())
         if op and op.get("operationId"):
+            if op["operationId"] != entry["operation_id"]:
+                raise ValueError(f"Gateway operation ID changed for {entry['method']} {entry['path']}; review and update admin-operations.json before enabling it")
             operation_ids.append(op["operationId"])
     if not operation_ids:
         raise ValueError("The proxy spec contains none of the selected admin operations")
@@ -44,23 +45,29 @@ def registration(spec: dict, base_url: str, agent_url: str) -> dict:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true", help="Create the named MCP registration; default only prints a redacted preview")
+    parser.add_argument("--write-tool-names", action="store_true", help="Save the compatible tool allowlist in the local env file")
+    parser.add_argument("--env-file", default=str(ROOT / ".env"))
     args = parser.parse_args()
-    load_dotenv(ROOT / ".env")
-    base_url = os.getenv("LITELLM_BASE_URL", "https://gateway.litellm-sandbox.ai/v1").rstrip("/").removesuffix("/v1")
-    parsed = urlparse(base_url)
-    if parsed.scheme != "https" or parsed.username or parsed.password:
-        raise ValueError("Configure an HTTPS proxy URL without embedded credentials")
+    load_dotenv(args.env_file)
+    base_url = os.getenv("LITELLM_BASE_URL", "").rstrip("/").removesuffix("/v1")
+    trusted_url(base_url, "LITELLM_BASE_URL", origin_only=True)
     admin_key = os.getenv("LITELLM_ADMIN_KEY", "")
     if args.apply and not admin_key:
         raise ValueError("Add LITELLM_ADMIN_KEY to the private .env file first")
     with httpx2.Client(timeout=30, follow_redirects=False) as client:
-        result = client.get(base_url + "/openapi.json")
+        headers = {"Authorization": f"Bearer {admin_key}"} if admin_key else {}
+        result = client.get(base_url + "/openapi.json", headers=headers)
         result.raise_for_status()
-        payload = registration(result.json(), base_url, os.getenv("AGENT_PUBLIC_URL", ""))
+        payload = registration(result.json(), base_url, os.getenv("AGENT_PUBLIC_URL") or os.getenv("RENDER_EXTERNAL_URL", ""))
+        if args.write_tool_names:
+            env_file = Path(args.env_file)
+            if not env_file.is_file():
+                raise ValueError("Run setup_env.py first to create the private env file")
+            env_file.chmod(0o600)
+            set_key(str(env_file), "ADMIN_TOOL_NAMES", ",".join("personal_admin-" + name for name in payload["allowed_tools"]))
         if not args.apply:
             print(json.dumps(payload, indent=2))
             return
-        headers = {"Authorization": f"Bearer {admin_key}"}
         existing = client.get(base_url + "/v1/mcp/server", headers=headers)
         existing.raise_for_status()
         rows = existing.json()

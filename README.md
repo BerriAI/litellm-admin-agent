@@ -1,130 +1,145 @@
-# LiteLLM Admin
+# LiteLLM Admin Agent
 
-A shared admin assistant for BerriAI Slack and the LiteLLM sandbox gateway. It uses GPT-5.4 through the gateway and a native OpenAPI-derived MCP server with 62 selected management operations.
+Run a private Slack assistant for your own LiteLLM gateway. Ask about keys, teams, budgets and spending; optionally enable administrative changes. Each person connects their own gateway admin account. Model usage and tool calls use that person’s credential.
 
-## Deployment status
+**Deployment model:** one service, one gateway, one Slack workspace. You create your own Slack app from the included manifest and host the service yourself. No Slack Marketplace listing or shared multi-workspace service is required. Slack DMs are supported; channels and group DMs are intentionally ignored.
 
-Private source: https://github.com/BerriAI/litellm-admin-agent. The service is live at https://litellm-admin-agent.onrender.com on Render Starter, with Slack enabled and a persistent disk. The old Mac listener is stopped and its LaunchAgent is disabled to prevent duplicate processing after reboot.
+New installations are **read-only by default**. Writes require the operator to set `ADMIN_READ_ONLY=false`. This is enforced in the tool layer and HTTP backend, independently of model instructions.
 
-Render service: `srv-daoudt5g1s2s738nju1g`. Blueprint: `exs-daou10ijnfac73e6q0g0`. Gateway agent: `litellm-admin`, ID `b55a5cc9-bb4d-4f87-8969-20bb4439494d`. Invoke through `https://gateway.litellm-sandbox.ai/a2a/b55a5cc9-bb4d-4f87-8969-20bb4439494d` using your own bearer credential.
+## Prerequisites
 
-The dedicated `personal_admin` MCP registration has 62 operations and **no stored backend credential**. Live read-only checks verified caller identity, rejected missing/invalid backend credentials, and completed a gateway identity/budget lookup. Hosted checks also rejected duplicate request IDs and ordinary users with spoofed admin metadata. The original `litellm_admin` registration remains separate for the stopped Mac bot. Each Slack admin connects their own account through LiteLLM SSO.
+- A LiteLLM gateway on HTTPS, with a database, a model that supports tool calling, and native OpenAPI MCP server registration (`/v1/mcp/server`, an alias-specific `/personal_admin/mcp`, and per-request backend authorization forwarding).
+- Gateway users with the **`proxy_admin`** role and email addresses matching their Slack profiles. Slack admin/owner status alone does not grant access. Ordinary users, viewers, guests and bots are denied.
+- Permission to create/install a custom Slack app in your workspace. Your Slack organization may require an owner to approve the installation.
+- A dedicated HTTPS origin for the agent, reachable by users and the gateway, plus persistent writable storage. Outbound HTTPS/WSS access to Slack and HTTPS access to your gateway are required.
+- Docker Compose, or a paid Render web service with a persistent disk. For local setup helpers: Python 3.12.
 
-## Who can use it
+Compatibility is capability-based: `configure_mcp.py` checks the gateway’s actual OpenAPI routes and `doctor.py` checks native MCP discovery. Older gateways without these MCP features need an upgrade. The shipped route inventory was captured on LiteLLM 1.103.0; it is not a claim that all releases of that version support hosted OAuth. See [gateway compatibility](docs/compatibility.md).
 
-Any BerriAI member can find **LiteLLM Admin** in Slack Apps and open a DM.
-
-1. Send **connect** and open the private link (valid for ten minutes).
-2. Choose **Continue with LiteLLM SSO**. The browser opens the gateway’s configured SSO provider (Google on the sandbox; provider choice stays with LiteLLM).
-3. Sign in using the same email as Slack, choose the team for model usage if prompted, and approve the connection on LiteLLM.
-4. LiteLLM returns to the connection page automatically. No terminal verification code is required.
-5. Return to Slack and send your request.
-
-No API key is entered. The agent verifies the resulting session against the gateway’s current `proxy_admin` role and an exact email match to the verified Slack profile before saving it encrypted. Send **disconnect** to delete the saved session and invalidate pending links/sign-ins. An expired session requires another SSO sign-in. Existing saved personal-key connections remain usable until replaced or disconnected.
-
-The shared `personal_admin` MCP server authorizes operations by the caller’s live `proxy_admin` role. Its backend is this service’s `/admin-api` endpoint, which forwards only the 62 selected gateway routes with the same personal bearer and the real caller’s audit identity. No key or team permission changes are needed. The gateway registration uses `allow_all_keys=true` for discovery; actual calls are independently denied to ordinary users, viewers, missing credentials, and revoked admins by the backend. The MCP name and tool schemas may therefore be discoverable to other authenticated gateway users. The server is not anonymous/public and stores no backend credential.
-
-Guests, bots, users from other workspaces, viewers, and ordinary gateway users cannot operate the agent. Slack owner/admin status alone does not grant gateway administration. No shared `LITELLM_ADMIN_KEY`, model key, or MCP key is read by the running service. Old environment values do not provide a fallback.
-
-Both model requests and administrative tool calls use the requesting user’s personal credential. The credential is sent as gateway MCP authentication and as `x-mcp-personal_admin-authorization: Bearer …` to the admin-only backend, which forwards it to the gateway API. The model never receives that credential as text. This preserves native gateway identity and API/model restrictions; model access and usage are also associated with that credential.
-
-Gateway callers supply their own LiteLLM bearer on each request and do not need a Slack connection. The gateway forwards it plus a private service token; the agent validates `/user/info` and executes using that same bearer. Claimed role/user headers or message metadata grant no access. Access is rechecked before execution, each admin tool, and result delivery. Disconnecting during a Slack request prevents subsequent tools and private result delivery; it cannot undo an operation already sent.
-
-Gateway registry metadata may be visible to non-admins. The backend independently blocks their operations; registration alone is not an admin-only UI visibility control.
-
-Sign-in uses LiteLLM’s authorization-code flow: `/register`, `/authorize` with the gateway URL as `resource`, and `/token` with S256 PKCE. The gateway handles its own SSO provider, consent, and team selection. The app keeps the verifier and pending state encrypted, binds the callback to an HttpOnly Secure SameSite=Lax cookie, and checks state before exchanging a code. Starting sign-in requires a separate SameSite=Strict cookie, matching Origin, and CSRF token. A new connect link or disconnect invalidates an in-flight login before it can save a credential.
-
-The gateway must support hosted proxy-API callbacks and set `LITELLM_PROXY_API_OAUTH_REDIRECT_URIS=https://litellm-admin-agent.onrender.com/oauth/callback`. This is an exact HTTPS callback allowlist, separate from MCP callback settings. No wildcards, query strings, shared admin key, or separate IdP client secret are needed. An unconfigured gateway rejects this flow instead of falling back to CLI sign-in.
-
-The app stores only the time-limited personal access session. It revokes and discards the optional refresh token; a failed revocation is logged without secrets and never makes the refresh token available to the agent. LiteLLM defaults to 24 hours; the gateway’s `CLI_JWT_EXPIRATION_HOURS` / `LITELLM_CLI_JWT_EXPIRATION_HOURS` setting controls the actual lifetime. Expired sessions require SSO again. Disconnect removes the agent’s saved copy; the gateway-issued session expires on its own.
-
-## What it can do
-
-Read actual keys, teams, user records, budgets and spending; create and update keys; associate keys with teams; manage team membership and budgets using the selected operations in `admin-operations.json`. It discovers tool argument schemas dynamically. It is not every Admin UI feature. Add operations deliberately through `configure_mcp.py` and update the exact tool allowlist.
-
-For named-person key spending it resolves the user, reads their individual key objects, and labels stored key spend and available period information. User totals can differ from the sum of current keys. Explicit date ranges need filtered reports.
-
-Only user-requested changes are allowed by the instructions. Uncertain writes stop the run and are never retried automatically. Identical calls are cached within a run. A persistent SQLite journal prevents Slack delivery retries or repeated A2A request/message IDs from repeating operations. The event/action journal stores actor IDs, tool names and statuses, but no request bodies, credentials or raw outputs.
-
-Generated virtual keys are removed from model tool results and sent separately to the verified requester. Provider credentials and tokens are redacted. Conversation history lives in memory, is isolated by transport/user/conversation, and clears on restart. Tracing is disabled. Admin operations use the caller’s personal credential; the local journal also records the requesting identity. Saved account credentials live in a separate encrypted table in the persistent database. No raw credential is stored in the journal.
-
-## Architecture
-
-- `app.py`: Slack Socket Mode and process lifecycle.
-- `auth.py`: Slack profile/email matching and live LiteLLM role checks.
-- `admin_api.py`: role-gated backend for the shared MCP server; selected routes only and no shared credentials.
-- `connections.py`: private SSO connection pages, CSRF/browser protection, expiring links and encrypted sessions.
-- `sso.py`: LiteLLM authorization-code client with S256 PKCE and fixed gateway/callback URLs.
-- `connect.js`: navigates to gateway SSO after the protected sign-in form submission.
-- `agent.py`: configuration, MCP connection and model instructions.
-- `engine.py`: shared Agents SDK runner and conversation isolation.
-- `core.py`: tool validation, secret handling and persistent action journal.
-- `web.py`: A2A 0.3 JSON-RPC `message/send`; text only, no streaming/tasks/push.
-- `register_agent.py`: redacted registration preview and explicit apply command.
-- `configure_mcp.py`: existing native LiteLLM admin MCP setup.
-
-## Local setup
-
-Use Python 3.12, a virtual environment, and `pip install -r requirements-dev.txt`. Copy `.env.example` to a private `.env` and fill it locally. Never commit or paste credentials into chat.
-
-The BerriAI Slack app is `A0C3AE23W9H`; use the existing app rather than creating another. `slack-manifest.json` adds `users:read` and `users:read.email` to the existing `chat:write` and `im:history` permissions. Those scopes are already installed in BerriAI. Keep Socket Mode enabled with the existing `connections:write` app token and `message.im` events. The app’s Messages tab allows DMs.
-
-Set `LITELLM_MCP_URL=https://gateway.litellm-sandbox.ai/personal_admin/mcp` and `LITELLM_MCP_ALIAS=personal_admin`. The MCP registration must use `url=https://litellm-admin-agent.onrender.com/admin-api`, `spec_path=https://gateway.litellm-sandbox.ai/openapi.json`, empty stored credentials, and the selected operation allowlist. `allow_all_keys=true` is safe only with this role-gated backend; never enable it while the registration points directly at the gateway API. `ADMIN_TOOL_NAMES` must contain the exact discovered names including the `personal_admin-` prefix. Generate `CREDENTIAL_ENCRYPTION_KEY` with `cryptography.fernet.Fernet.generate_key()` and keep it stable across deploys. Losing or replacing it makes existing saved credentials unreadable, requiring admins to reconnect.
-
-Commands:
+## 1. Get the code and create private configuration
 
 ```sh
-python app.py --check
-python -m pytest -q
-python app.py --web
+git clone https://github.com/BerriAI/litellm-admin-agent.git
+cd litellm-admin-agent
+python3.12 -m venv .venv
+. .venv/bin/activate
+pip install --require-hashes -r requirements.txt
+python setup_env.py
 ```
 
-`--check` validates configuration and Slack workspace/profile access without posting or invoking administrative tools. It does not exercise a personal credential or LLM request. Optional `--list-tools` uses the explicit setup-only `LITELLM_SETUP_KEY`; this variable is not read by normal service startup. `configure_mcp.py --apply` and `register_agent.py --apply` use a private local `LITELLM_ADMIN_KEY` for one-time registration only. Do not add that setup credential to Render.
+`setup_env.py` creates a mode-0600 `.env` with unique encryption and service secrets. It refuses to overwrite an existing file. Save the encryption key in your secret manager: it must stay the same across restarts and upgrades.
 
-Browser verification also covers native form submission: `Referrer-Policy: same-origin` preserves the same-origin POST header required by CSRF protection. Browser-session, expired-link, and account-verification failures have separate messages; logs record only the failure category.
+Fill in these fields in `.env`:
 
-Tests cover callback state/cookie binding, PKCE, malformed gateway responses, expired sessions, encrypted restart persistence, link replay and disconnect races. They also exercise the real Agents SDK loop, caller-credential propagation to both clients, two-user isolation, role revocation, disconnect during a run, uncertain mutation handling, HTTP A2A requests, CSRF/browser binding, expired/replayed links, and encrypted persistence.
-
-## Render
-
-`render.yaml` defines one Starter Python web service in Oregon, a 1 GB persistent disk at `/var/data`, and a `/healthz` health check. Keep a single instance because SQLite and in-memory conversations are local to the service. Free services sleep and do not provide the persistent journal required for this deployment. Review current plan and disk pricing before creating the service.
-
-Build: `pip install -r requirements.txt`.
-Start: `python app.py --web`.
-Python: `3.12.13`.
-The five prompted Blueprint values are:
-
-| Field | Purpose |
+| Field | Value |
 | --- | --- |
-| `SLACK_BOT_TOKEN` | Existing app’s bot token |
-| `SLACK_APP_TOKEN` | Existing app’s Socket Mode token |
-| `CREDENTIAL_ENCRYPTION_KEY` | Encrypts each admin’s saved session and pending sign-in |
-| `ADMIN_TOOL_NAMES` | Exact allowlist of 62 `personal_admin-` tools |
-| `ADMIN_AGENT_SERVICE_TOKEN` | Authenticates gateway-to-agent requests |
+| `LITELLM_BASE_URL` | Your gateway URL, e.g. `https://gateway.example.com/v1` |
+| `LITELLM_MODEL` | A model name configured on **your** gateway and accessible to your admins |
+| `AGENT_PUBLIC_URL` | The agent’s dedicated HTTPS origin, e.g. `https://admin.example.com`; no subpath |
+| `SLACK_WORKSPACE_ID` | Your workspace’s `T…` ID; find it in the Slack web URL |
+| `SLACK_BOT_TOKEN` | The installed app’s `xoxb-…` token |
+| `SLACK_APP_TOKEN` | The app’s Socket Mode `xapp-…` token |
 
-There is no shared admin key in the hosted settings. Store secret fields as private Render environment values. Generate a random 32+ character service token, also used by the gateway registration. The service gets its public URL from `RENDER_EXTERNAL_URL`; set `AGENT_PUBLIC_URL` only when overriding it. Set `STATE_DB=/var/data/events.sqlite3` so replay protection survives deploys. Automatic code deploys remain disabled. Blueprint changes are synced automatically; use a manual deploy for code-only changes. `SLACK_ENABLED=true` is the current hosted setting.
+Leave `CONNECTION_AUTH_MODE=api_key` for the portable installation path. Users submit their **personal** virtual key on a private browser page, never in Slack. The connection is encrypted, expires after 24 hours, and is reauthorized against the gateway before use. For browser SSO without key entry, see [SSO setup](docs/compatibility.md#optional-browser-sso).
 
-A Dockerfile is also supplied. Its build context explicitly excludes credentials and state; it runs as a non-root user. When mounting a Docker data volume, ensure UID 10001 can write it.
+Do not use shared/master credentials for runtime requests. Setup-only `LITELLM_ADMIN_KEY` and `LITELLM_SETUP_KEY` are read only by the explicitly invoked setup helpers; normal startup never uses them.
 
-## Gateway registration and verification
+## 2. Create and install your Slack app
 
-After the service is healthy, set its actual HTTPS URL and matching private service token in the local configuration. Run `python register_agent.py` to preview the registration without showing secrets, then `python register_agent.py --apply` to create it. Existing `litellm-admin` registrations stop the helper rather than creating duplicates.
+1. Open [Slack’s app dashboard](https://api.slack.com/apps), choose **Create New App → From a manifest**, and select your workspace.
+2. Paste the contents of [`slack-manifest.json`](slack-manifest.json). Review and create the app.
+3. Under **Basic Information → App-Level Tokens**, create a token with the `connections:write` scope. Save it as `SLACK_APP_TOKEN`.
+4. Under **OAuth & Permissions**, choose **Install to Workspace** and approve the requested scopes. Save the bot token as `SLACK_BOT_TOKEN`.
+5. Confirm **Socket Mode** is enabled. The manifest subscribes to `message.im` and enables the app’s Messages tab. No Slack event Request URL is needed.
 
-Registration uses `litellm_params.make_public=false`, static `X-Admin-Agent-Token`, and `extra_headers=["Authorization"]`. Do not add a provider API key that replaces the original caller’s bearer. The gateway routes requests; it does not host the Python agent.
+The bot requests only `chat:write`, `im:history`, `users:read` and `users:read.email`. Reinstall the app after changing scopes. Each deployment gets its own app tokens; do not reuse an app across multiple running listeners.
 
-Verify against the actual deployed gateway:
+## 3. Deploy
 
-1. Hosted `/healthz` is healthy and the agent card reports protocol 0.3.0.
-2. Missing/invalid caller or service credentials cannot invoke an operation.
-3. A real `proxy_admin` caller can run a read-only budget query through `/a2a/{agent_id}`.
-4. A real ordinary-user credential is denied even with spoofed admin metadata/headers.
-5. Slack allows an actual matching proxy admin and denies a non-admin.
-6. During a future migration, set the new listener to `SLACK_ENABLED=false` until the previous listener is stopped. The current cutover is complete: Render uses `SLACK_ENABLED=true`; the Mac LaunchAgent is disabled and unloaded. Retain the Mac files for rollback. Copy the current SQLite journal using SQLite’s backup API if continuity is needed. Never copy a live database file directly.
+Validate your configuration first:
 
-Verification covers the actual hosted role gate, native MCP caller forwarding, read-only admin tool use, and ordinary-user rejection. Neither existing keys nor team grants are modified. Temporary test users and keys are removed afterward.
+```sh
+python doctor.py --offline
+```
 
-## Known scope and limits
+### Docker Compose
 
-This is an internal sandbox assistant. There is no public sign-up, automatic Slack role assignment, user impersonation, or automatic escalation from regular user to admin. New admins receive access by the normal gateway role-management process. This assistant does not create invitations or email people unless explicitly requested.
+```sh
+docker compose up -d --build
+```
 
-Synchronous A2A responses may time out during long runs. Repeated request IDs are rejected rather than replayed; inspect state after an uncertain result before asking for the change again. Authorization requests add latency and depend on Slack and the gateway being available. This version has bounded in-memory conversations and a serialized agent runner, suitable for a small internal admin group.
+The included Compose file binds port 10000 to localhost and keeps state in the `admin-state` named volume. Put a TLS reverse proxy on the same host in front of it. For example, a host-installed Caddy configuration:
+
+```caddyfile
+admin.example.com {
+    reverse_proxy 127.0.0.1:10000
+}
+```
+
+Point DNS at the host first. If your reverse proxy is containerized or remote, use its private network address instead of localhost. Do not expose plain HTTP to users. Avoid access logs containing `/connect/*` paths or `/oauth/callback` query strings: they contain short-lived login material. Forward the original Origin header unchanged.
+
+The image runs as UID 10001 with a read-only root filesystem, dropped capabilities and persistent `/var/data`. Compose passes only explicitly listed runtime settings, so setup credentials in your local environment are not injected into the container.
+
+### Render
+
+Create a Render Blueprint using this repository (or your accessible fork) and [`render.yaml`](render.yaml). Choose the paid plan with a persistent disk and fill in your own gateway, model, Slack workspace/tokens, and encryption key. Render generates a service token and provides `RENDER_EXTERNAL_URL`; put that URL in your local `.env` as `AGENT_PUBLIC_URL` for the setup helpers. Copy the generated service token locally only if you want optional A2A registration.
+
+After the next step, copy the generated `ADMIN_TOOL_NAMES` value from local `.env` into Render. Use a single instance and manual deployments. This consumes paid hosting resources; the blueprint does not deploy a gateway or configure DNS for you.
+
+Both options expose `/healthz` for liveness, `/readyz` for local database/Slack connectivity, and a landing page at `/`. Readiness does not prove that a user can run a model or tool; finish the checks below.
+
+## 4. Register the gateway tools and verify
+
+The app must be reachable by your gateway at `AGENT_PUBLIC_URL` before using its tools. Provide `LITELLM_ADMIN_KEY` to your **local setup process** using your secret manager or a private environment. This is a one-time gateway setup credential; do not add it to Render.
+
+```sh
+# Preview the registration and save the compatible tool names in local .env.
+python configure_mcp.py --write-tool-names
+# Create the dedicated registration after reviewing the preview.
+python configure_mcp.py --apply
+# Reload ADMIN_TOOL_NAMES in Docker; on Render copy it into environment settings.
+docker compose up -d --force-recreate
+```
+
+The helper creates `personal_admin`, points its backend at **your agent’s `/admin-api`**, and stores no backend credential. It refuses duplicate registrations. If `personal_admin` already exists, inspect it before changing it; never set `allow_all_keys=true` on a registration pointing directly at your gateway API. Discovery can be visible to other gateway users, but the backend independently requires a live proxy admin for every call.
+
+Set `LITELLM_SETUP_KEY` in the local setup process to your personal proxy-admin key, then run:
+
+```sh
+python doctor.py
+```
+
+This verifies identity, model availability, compatible management routes, the MCP backend URL and exact tool discovery, Slack workspace/scopes and the Socket Mode app token. Gateway listings redact stored secrets, so an existing registration’s empty credential response does not prove it has no shared credential; verify its configuration separately. The preflight does not invoke an LLM, run management tools or send Slack messages. Remove setup credentials from your environment afterward.
+
+## 5. Connect and do a first read
+
+1. Find **LiteLLM Admin** under Slack Apps and open a DM.
+2. Send **connect** and open the private link within ten minutes.
+3. Connect your own LiteLLM proxy-admin account. In personal-key mode, use a key for the same account/email as Slack. In SSO mode, sign in and consent on your gateway.
+4. Return to Slack and ask: **“List my teams and their current budgets.”**
+5. Confirm that a regular gateway user is denied and that **“Create a key”** is refused while read-only mode is enabled.
+
+Send **disconnect** to delete the saved credential and invalidate pending connection links. It stops subsequent tools and result delivery in an in-flight request; it cannot undo an operation already sent. Revoke the credential in LiteLLM if you also need to invalidate it outside this app.
+
+When you are ready to permit changes, set `ADMIN_READ_ONLY=false` and redeploy. The model is instructed to change state only when requested, but write mode does not include a separate human approval workflow. Use a test gateway to validate your chosen model and administrative workflows before enabling writes in production. The operation inventory is bounded; this is not every Admin UI feature.
+
+## Operations and development
+
+- [Operations, backups, upgrades and troubleshooting](docs/operations.md)
+- [Gateway compatibility, SSO and optional A2A registration](docs/compatibility.md)
+- [Security model and launch acceptance checks](SECURITY.md)
+
+```sh
+pip install --require-hashes -r requirements-dev.txt
+python -m pytest -q
+docker build -t litellm-admin-agent:smoke .
+python scripts/smoke_container.py
+```
+
+CI runs the tests and boots the real image, checking readiness, runtime assets, non-root execution and replay protection after a container restart. The smoke test uses no external credentials and sends no Slack messages. Update dependency inputs in `requirements.in` / `requirements-dev.in`, then regenerate both hash-locked files with `uv pip compile --python-version 3.12 --generate-hashes`.
+
+## License
+
+Licensed under the [MIT License](LICENSE). You can use, modify, self-host and redistribute this software, including commercially, while retaining the copyright and license notice.
+
+Before a public launch, the repository owner must make the source accessible to the intended users.

@@ -1,5 +1,4 @@
 {
-  "proxy": "https://gateway.litellm-sandbox.ai",
   "reported_version": "1.103.0",
   "operations": [
     {
@@ -374,5 +373,6 @@
       "operation_id": "delete_budget_budget_delete_post",
       "summary": "Delete Budget"
     }
-  ]
+  ],
+  "source": "LiteLLM OpenAPI management routes; verify against your gateway with configure_mcp.py"
 }

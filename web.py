@@ -10,6 +10,8 @@ from urllib.parse import urlparse
 from aiohttp import web
 
 from auth import AccessDenied, AuthorizationUnavailable
+from engine import AgentBusy
+from connections import page
 
 
 def agent_card(public_url: str) -> dict:
@@ -40,7 +42,7 @@ def identifier(value) -> bool:
     return isinstance(value, str) and 0 < len(value) <= 200 and all(ord(c) >= 32 for c in value)
 
 
-def create_web_app(settings, authorizer, runner, journal, connections=None):
+def create_web_app(settings, authorizer, runner, journal, connections=None, *, ready=None):
     if len(settings.service_token) < 32:
         raise ValueError("ADMIN_AGENT_SERVICE_TOKEN must have at least 32 characters")
     card = agent_card(settings.public_url)
@@ -49,6 +51,20 @@ def create_web_app(settings, authorizer, runner, journal, connections=None):
 
     async def health(_):
         return web.json_response({"status": "ok"})
+
+    async def readiness(_):
+        try:
+            journal.db.execute("SELECT 1").fetchone()
+            healthy = await ready() if ready else True
+        except Exception:
+            healthy = False
+        return web.json_response({"status": "ready" if healthy else "not_ready"}, status=200 if healthy else 503)
+
+    async def home(_):
+        return page("LiteLLM Admin", "<p>Your private assistant for gateway keys, teams, budgets and spend.</p>"
+                    "<p>Open LiteLLM Admin in your workspace’s Slack Apps, send <strong>connect</strong>, and follow the private connection link.</p>"
+                    "<p>Your own gateway account must be a proxy admin and use the same email as Slack. "
+                    "Send <strong>disconnect</strong> in Slack to remove the saved connection.</p>")
 
     async def discovery(_):
         return web.json_response(card)
@@ -116,6 +132,9 @@ def create_web_app(settings, authorizer, runner, journal, connections=None):
                 "kind": "message", "role": "agent", "messageId": str(uuid.uuid4()),
                 "contextId": context, "parts": result_parts,
             }}, headers={"Cache-Control": "no-store"})
+        except AgentBusy:
+            status = "busy"
+            return error(rpc_id, -32005, "Service is busy; no operation started. Retry with new request and message IDs.", 429)
         except AccessDenied:
             status = "denied"
             return error(rpc_id, -32003, "Admin access was revoked. Inspect gateway state before retrying changes.", 403)
@@ -127,7 +146,9 @@ def create_web_app(settings, authorizer, runner, journal, connections=None):
             active -= 1
             journal.finish(event_id, status)
 
+    app.router.add_get("/", home)
     app.router.add_get("/healthz", health)
+    app.router.add_get("/readyz", readiness)
     app.router.add_get("/.well-known/agent-card.json", discovery)
     app.router.add_get("/.well-known/agent.json", discovery)
     # LiteLLM's A2A resolver discovers relative to the registered endpoint URL.

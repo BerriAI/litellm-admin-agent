@@ -186,7 +186,8 @@ class Connections:
 
     def add_routes(self, app):
         app.router.add_get("/connect.js", self.script)
-        app.router.add_get("/oauth/callback", self.callback)
+        if self.settings.connection_auth_mode == "sso":
+            app.router.add_get("/oauth/callback", self.callback)
         app.router.add_get("/connect/{token}", self.show)
         app.router.add_post("/connect/{token}", self.connect)
 
@@ -217,6 +218,13 @@ class Connections:
 <form method="post"><input type="hidden" name="csrf" value="{csrf}">
 <button type="submit" name="action" value="start">Continue with LiteLLM SSO</button></form>
 <small>No API key or terminal code needed. Your session is encrypted before it is saved. Send “disconnect” in Slack to remove it, or “connect” when you need to sign in again.</small>""")
+        if self.settings.connection_auth_mode == "api_key":
+            result = page("Connect your LiteLLM account", f"""<p>Enter a personal LiteLLM virtual key belonging to your own proxy-admin account. Your gateway account email must match your Slack email.</p>
+<p>Model usage and admin actions use this key. Do not use the gateway master key or someone else’s key. Never paste a key into Slack.</p>
+<form method="post"><input type="hidden" name="csrf" value="{csrf}">
+<label for="credential">Personal gateway key</label><input id="credential" name="credential" type="password" required maxlength="8192" autocomplete="off" spellcheck="false">
+<button type="submit" name="action" value="connect_key">Connect account</button></form>
+<small>Your key is encrypted before storage. This connection expires in 24 hours. Send “disconnect” in Slack to remove it; revoke the key in LiteLLM to invalidate the key itself.</small>""")
         result.set_cookie(COOKIE, cookie, secure=True, httponly=True, samesite="Strict", max_age=600, path="/")
         return result
 
@@ -255,7 +263,8 @@ class Connections:
                 raise AccessDenied()
         except (AccessDenied, InvalidToken, ValueError, KeyError, TypeError):
             return self._browser_error()
-        if form.get("action") != "start":
+        expected_action = "connect_key" if self.settings.connection_auth_mode == "api_key" else "start"
+        if form.get("action") != expected_action:
             return self._expired()
         async with self._locks[int(digest(token)[:8], 16) % len(self._locks)]:
             try:
@@ -263,6 +272,13 @@ class Connections:
                 workspace, slack_user = owner.split(":", 1)
                 if workspace != self.settings.workspace:
                     raise AccessDenied()
+                if self.settings.connection_auth_mode == "api_key":
+                    credential = str(form.get("credential", ""))
+                    if (not 1 <= len(credential) <= 8192 or any(c.isspace() for c in credential)):
+                        raise AccessDenied()
+                    principal = await self.authorizer.require_slack_admin(slack_user, self.slack, credential)
+                    self.store.finish(token, owner, principal.user_id, credential, time.time() + 86400)
+                    return self._connected()
                 pending = self.store.pending(token)
                 if pending and not hmac.compare_digest(pending["csrf"], cookie["csrf"]):
                     return self._browser_error()
@@ -307,9 +323,12 @@ class Connections:
                 if principal.user_id != signed_in.user_id:
                     raise AccessDenied()
                 self.store.finish(token, owner, principal.user_id, signed_in.credential, signed_in.expires_at)
-                result = page("Account connected", "<p>Return to your private Slack conversation with LiteLLM Admin and send your request again.</p>")
-                result.del_cookie(COOKIE, path="/", secure=True, httponly=True, samesite="Strict")
-                result.del_cookie(OAUTH_COOKIE, path="/", secure=True, httponly=True, samesite="Lax")
-                return result
+                return self._connected()
             except (AccessDenied, AuthorizationUnavailable, ConnectionRequired, SignInExpired) as exc:
                 return self._failure(exc)
+
+    def _connected(self):
+        result = page("Account connected", "<p>Return to your private Slack conversation with LiteLLM Admin and send your request again.</p>")
+        result.del_cookie(COOKIE, path="/", secure=True, httponly=True, samesite="Strict")
+        result.del_cookie(OAUTH_COOKIE, path="/", secure=True, httponly=True, samesite="Lax")
+        return result

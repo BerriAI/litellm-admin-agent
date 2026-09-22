@@ -83,7 +83,7 @@ class FakeConnections:
 
 def settings():
     return Settings("Tberri", "https://example.com/personal_admin/mcp", "personal_admin",
-                    frozenset({"create_key"}), "https://example.com/v1", "test", "unused", "unused", ":memory:")
+                    frozenset({"create_key"}), "https://example.com/v1", "test", "unused", "unused", ":memory:", read_only=False)
 
 
 @pytest.mark.parametrize("body", [
@@ -239,12 +239,12 @@ def test_hashed_key_identifiers_survive_redaction_but_credentials_do_not():
 
 def test_registration_only_selects_known_admin_routes_from_live_spec():
     spec = {"paths": {
-        "/key/generate": {"post": {"operationId": "new_key"}},
-        "/team/info": {"get": {"operationId": "team_details"}},
+        "/key/generate": {"post": {"operationId": "generate_key_fn_key_generate_post"}},
+        "/team/info": {"get": {"operationId": "team_info_team_info_get"}},
         "/cache/flushall": {"post": {"operationId": "flush_everything"}},
     }}
     payload = registration(spec, "https://gateway.example.com", "https://agent.example.com")
-    assert payload["allowed_tools"] == ["new_key", "team_details"]
+    assert payload["allowed_tools"] == ["generate_key_fn_key_generate_post", "team_info_team_info_get"]
     assert payload["allow_all_keys"] is True
     assert payload["url"] == "https://agent.example.com/admin-api"
     assert payload["spec_path"] == "https://gateway.example.com/openapi.json"
@@ -255,3 +255,9 @@ def test_registration_only_selects_known_admin_routes_from_live_spec():
 def test_registration_refuses_empty_selection():
     with pytest.raises(ValueError):
         registration({"paths": {}}, "https://gateway.example.com", "https://agent.example.com")
+
+
+def test_registration_rejects_operation_id_drift_before_enabling_unclassified_tools():
+    with pytest.raises(ValueError, match="operation ID changed"):
+        registration({"paths": {"/key/generate": {"post": {"operationId": "changed"}}}},
+                     "https://gateway.example.com", "https://agent.example.com")
