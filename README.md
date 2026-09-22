@@ -4,9 +4,11 @@ A shared admin assistant for BerriAI Slack and the LiteLLM sandbox gateway. It u
 
 ## Deployment status
 
-Private source: https://github.com/BerriAI/litellm-admin-agent. The personal-account implementation passes 88 automated tests. The hosted service has not been deployed yet; the previous Tin-only bot remains active on Tin’s Mac.
+Private source: https://github.com/BerriAI/litellm-admin-agent. The personal-account implementation passes 88 automated tests. The service is live at https://litellm-admin-agent.onrender.com on Render Starter, with Slack enabled and a persistent disk. The old Mac listener is stopped and its LaunchAgent is disabled to prevent duplicate processing after reboot.
 
-The dedicated `personal_admin` MCP registration has 62 operations and **no stored backend credential**. Live read-only checks on the sandbox gateway verified a valid personal credential returns Tin’s identity; missing backend credentials fail; an invalid backend credential returns HTTP 401. The original `litellm_admin` registration remains separate for the Mac bot. Hosted Slack account connection, gateway forwarding, and final cutover still require live verification.
+Render service: `srv-daoudt5g1s2s738nju1g`. Blueprint: `exs-daou10ijnfac73e6q0g0`. Gateway agent: `litellm-admin`, ID `b55a5cc9-bb4d-4f87-8969-20bb4439494d`. Invoke through `https://gateway.litellm-sandbox.ai/a2a/b55a5cc9-bb4d-4f87-8969-20bb4439494d` using your own bearer credential.
+
+The dedicated `personal_admin` MCP registration has 62 operations and **no stored backend credential**. Live read-only checks on the sandbox gateway verified a valid personal credential returns Tin’s identity; missing backend credentials fail; an invalid backend credential returns HTTP 401. The original `litellm_admin` registration remains separate for the Mac bot. Live hosted checks verified health and agent cards, rejected missing/invalid credentials, rejected duplicate request IDs, and completed a read-only identity/budget lookup through the gateway with Tin’s identity. A temporary ordinary user was rejected by the backend even with spoofed admin metadata; the test user and key were deleted. The Render Slack listener replied to Tin’s `connect` message with a private link, and that HTTPS page loaded correctly. Each admin must still connect their own key before Slack operations; Tin’s hosted credential has not been saved yet.
 
 ## Who can use it
 
@@ -81,7 +83,7 @@ The five prompted Blueprint values are:
 | `ADMIN_TOOL_NAMES` | Exact allowlist of 62 `personal_admin-` tools |
 | `ADMIN_AGENT_SERVICE_TOKEN` | Authenticates gateway-to-agent requests |
 
-There is no shared admin key in the hosted settings. Store secret fields as private Render environment values. Generate a random 32+ character service token, also used by the gateway registration. The service gets its public URL from `RENDER_EXTERNAL_URL`; set `AGENT_PUBLIC_URL` only when overriding it. Set `STATE_DB=/var/data/events.sqlite3` so replay protection survives deploys. Automatic deploys start disabled for a controlled cutover.
+There is no shared admin key in the hosted settings. Store secret fields as private Render environment values. Generate a random 32+ character service token, also used by the gateway registration. The service gets its public URL from `RENDER_EXTERNAL_URL`; set `AGENT_PUBLIC_URL` only when overriding it. Set `STATE_DB=/var/data/events.sqlite3` so replay protection survives deploys. Automatic code deploys remain disabled. Blueprint changes are synced automatically; use a manual deploy for code-only changes. `SLACK_ENABLED=true` is the current hosted setting.
 
 A Dockerfile is also supplied. Its build context explicitly excludes credentials and state; it runs as a non-root user. When mounting a Docker data volume, ensure UID 10001 can write it.
 
@@ -98,9 +100,9 @@ Verify against the actual deployed gateway:
 3. A real `proxy_admin` caller can run a read-only budget query through `/a2a/{agent_id}`.
 4. A real ordinary-user credential is denied even with spoofed admin metadata/headers.
 5. Slack allows an actual matching proxy admin and denies a non-admin.
-6. The Render blueprint starts with `SLACK_ENABLED=false`, leaving the Mac listener active while A2A is verified. Stop the Mac listener, then set Render `SLACK_ENABLED=true` and redeploy. Retain the Mac files for rollback. Copy the current SQLite journal using SQLite’s backup API if continuity is needed. Never copy a live database file directly.
+6. During a future migration, set the new listener to `SLACK_ENABLED=false` until the previous listener is stopped. The current cutover is complete: Render uses `SLACK_ENABLED=true`; the Mac LaunchAgent is disabled and unloaded. Retain the Mac files for rollback. Copy the current SQLite journal using SQLite’s backup API if continuity is needed. Never copy a live database file directly.
 
-Until these live checks pass, describe the hosted integration as prepared, not verified.
+The hosted API, gateway forwarding, non-admin denial, and Slack connection reply have been checked live. A completed personal-key connection followed by an authenticated Slack admin request remains the final user onboarding check.
 
 ## Known scope and limits
 
