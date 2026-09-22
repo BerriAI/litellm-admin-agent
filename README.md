@@ -132,6 +132,7 @@ python doctor.py
 - [Troubleshooting, backups and upgrades](docs/operations.md)
 - [Security and launch checks](SECURITY.md)
 - [Development and tests](docs/development.md)
+- [Contributing and proposing changes](CONTRIBUTING.md)
 
 ## License
 

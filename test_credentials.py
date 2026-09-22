@@ -2,6 +2,8 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 
 import pytest
+import httpx2
+from openai import APIStatusError
 
 import agent
 from auth import Principal
@@ -58,6 +60,34 @@ async def test_model_uses_caller_key_and_disables_automatic_retries():
     async with agent.model_session(settings(), "personal-key") as model:
         assert model._client.api_key == "personal-key"
         assert model._client.max_retries == 0
+
+
+@pytest.mark.parametrize("status", [307, 308])
+@pytest.mark.asyncio
+async def test_model_never_forwards_conversation_to_a_redirect_target(monkeypatch, status):
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx2.Response(status, headers={"Location": "https://other.example.com/collect"})
+        return httpx2.Response(200, json={"id": "test", "object": "chat.completion", "created": 1,
+            "model": "test", "choices": [{"index": 0, "finish_reason": "stop",
+                                          "message": {"role": "assistant", "content": "unexpected"}}]})
+
+    original_init = httpx2.AsyncClient.__init__
+
+    def mock_transport(self, **kwargs):
+        original_init(self, **{**kwargs, "transport": httpx2.MockTransport(handle)})
+
+    monkeypatch.setattr(httpx2.AsyncClient, "__init__", mock_transport)
+    async with agent.model_session(settings(), "personal-key") as model:
+        with pytest.raises(APIStatusError) as failure:
+            await model._client.chat.completions.create(model="test", messages=[
+                {"role": "user", "content": "Private gateway administration request"}])
+    assert failure.value.status_code == status
+    assert len(requests) == 1
+    assert str(requests[0].url).startswith(settings().model_url)
 
 
 @pytest.mark.asyncio

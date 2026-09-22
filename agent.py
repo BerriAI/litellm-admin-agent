@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx2
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, DefaultAsyncHttpxClient
 from agents import OpenAIChatCompletionsModel
 from agents import Agent, ModelSettings, function_tool
 from mcp import ClientSession
@@ -175,7 +175,8 @@ async def mcp_session(settings: Settings, credential: str):
 async def model_session(settings: Settings, credential: str):
     if not credential:
         raise ValueError("An explicit caller credential is required")
-    async with AsyncOpenAI(api_key=credential, base_url=settings.model_url, max_retries=0, timeout=120) as client:
+    async with AsyncOpenAI(api_key=credential, base_url=settings.model_url, max_retries=0, timeout=120,
+                           http_client=DefaultAsyncHttpxClient(follow_redirects=False)) as client:
         yield OpenAIChatCompletionsModel(model=settings.model, openai_client=client)
 
 
