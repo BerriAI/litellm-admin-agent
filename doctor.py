@@ -46,7 +46,10 @@ async def check(settings: Settings, *, offline: bool, credential: str = "") -> l
         if (len(matches) != 1 or matches[0].get("url") != expected["url"]
                 or matches[0].get("credentials") or matches[0].get("auth_type") != "bearer_token"):
             raise ValueError("The personal_admin registration must use this agent’s /admin-api backend, bearer_token auth and no stored credentials. Inspect the registration before continuing.")
-        results.append("MCP points to this role-gated backend with no stored credentials: OK")
+        results.append("MCP backend URL and bearer authentication configuration: OK")
+        # LiteLLM redacts stored secrets from this listing. An empty response is
+        # not evidence that no credential is stored in the gateway database.
+        results.append("Stored MCP credentials are redacted by the gateway. The setup helper creates an empty credential configuration; verify that existing registrations have no shared backend credential.")
         models = await client.get(settings.model_url.rstrip("/") + ("/models" if settings.model_url.endswith("/v1") else "/v1/models"), headers=headers)
         models.raise_for_status()
         if settings.model not in {m.get("id") for m in models.json().get("data", [])}:

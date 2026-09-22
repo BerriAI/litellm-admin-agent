@@ -242,6 +242,7 @@ async def test_preflight_verifies_backend_without_running_tools_or_inference(tmp
     if backend.endswith("/admin-api"):
         results = await doctor.check(config, offline=False, credential="personal-key")
         assert any("Native MCP discovery" in item for item in results)
+        assert any("redacted by the gateway" in item for item in results)
     else:
         with pytest.raises(ValueError, match="role-gated|/admin-api"):
             await doctor.check(config, offline=False, credential="personal-key")

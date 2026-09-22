@@ -109,7 +109,7 @@ Set `LITELLM_SETUP_KEY` in the local setup process to your personal proxy-admin 
 python doctor.py
 ```
 
-This verifies identity, model availability, compatible management routes, exact MCP tool discovery, Slack workspace/scopes and the Socket Mode app token. It does not invoke an LLM, run management tools or send Slack messages. Remove setup credentials from your environment afterward.
+This verifies identity, model availability, compatible management routes, the MCP backend URL and exact tool discovery, Slack workspace/scopes and the Socket Mode app token. Gateway listings redact stored secrets, so an existing registration’s empty credential response does not prove it has no shared credential; verify its configuration separately. The preflight does not invoke an LLM, run management tools or send Slack messages. Remove setup credentials from your environment afterward.
 
 ## 5. Connect and do a first read
 
