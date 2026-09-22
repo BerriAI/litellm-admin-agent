@@ -223,7 +223,10 @@ class ToolBridge:
                     raise ToolOutcomeUnknown("The gateway did not confirm the write; inspect state before retrying")
                 if len(encoded) > 80000:
                     encoded = json.dumps({"notice": "Result exceeds the response limit. Use pagination or a narrower query.", "partial_result": encoded[:80000]})
-                self.completed[fingerprint] = encoded
+                # Fetch successful reads again so a verification lookup sees
+                # changes made since the earlier lookup. Keep writes deduplicated.
+                if not read_only or data.get("isError"):
+                    self.completed[fingerprint] = encoded
                 self.journal.audit(self.event_id, name, "tool_error" if data.get("isError") else "completed")
                 return encoded
             except asyncio.CancelledError:

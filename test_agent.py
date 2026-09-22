@@ -164,6 +164,31 @@ async def test_exact_duplicate_tool_invocation_only_executes_once():
 
 
 @pytest.mark.asyncio
+async def test_verification_reads_refresh_gateway_state_without_replaying_writes():
+    read = "personal_admin-team_info_team_info_get"
+    write = "personal_admin-update_team_team_update_post"
+    tools = [types.Tool(name=name, inputSchema={"type": "object"}) for name in (read, write)]
+    state = {"max_budget": 10}
+    calls = []
+
+    async def invoke(name, arguments):
+        calls.append(name)
+        if name == write:
+            state["max_budget"] = arguments["max_budget"]
+        return response(dict(state))
+
+    bridge = ToolBridge(tools, frozenset({read, write}), invoke, Journal(":memory:"), "Ev1")
+    args = {"team_id": "engineering"}
+    before = await bridge.call(read, args)
+    changed = await bridge.call(write, {**args, "max_budget": 20})
+    after = await bridge.call(read, args)
+    assert json.loads(json.loads(before)["content"][0]["text"])["max_budget"] == 10
+    assert json.loads(json.loads(after)["content"][0]["text"])["max_budget"] == 20
+    assert await bridge.call(write, {**args, "max_budget": 20}) == changed
+    assert calls == [read, write, read]
+
+
+@pytest.mark.asyncio
 async def test_uncertain_mutation_stops_run_without_automatic_retry():
     calls = []
     async def invoke(**kwargs):
