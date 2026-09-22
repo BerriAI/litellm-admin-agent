@@ -23,7 +23,7 @@ class Authorizer:
 
 class Runner:
     def __init__(self): self.calls = []
-    async def execute(self, text, principal, context, event_id, verify):
+    async def execute(self, text, principal, context, event_id, verify, credential):
         await verify()
         self.calls.append((text, principal.actor, context))
         return Outcome("Budget is $20", {"returned_key_1": "sk-private123456789"}, "completed")
@@ -144,17 +144,17 @@ async def test_revocation_before_tool_prevents_mutation_and_cached_delivery():
 async def test_real_sdk_histories_are_isolated_by_principal_and_context():
     mcp = FakeMCP(); model = ScriptedModel()
     @asynccontextmanager
-    async def connect(_): yield mcp
+    async def connect(_, credential): yield mcp
     async def verify(): pass
     runner = AgentRunner(settings(), Journal(":memory:"), model, connect)
     alice = Principal("alice", "alice@example.com", "gateway", "alice")
     bob = Principal("bob", "bob@example.com", "gateway", "bob")
-    await runner.execute("ALICE PRIVATE REQUEST", alice, "same", "e1", verify)
-    await runner.execute("BOB PRIVATE REQUEST", bob, "same", "e2", verify)
+    await runner.execute("ALICE PRIVATE REQUEST", alice, "same", "e1", verify, "alice-key")
+    await runner.execute("BOB PRIVATE REQUEST", bob, "same", "e2", verify, "bob-key")
     assert "ALICE PRIVATE" not in str(model.inputs[-1])
-    await runner.execute("ALICE DIFFERENT CHAT", alice, "new", "e3", verify)
+    await runner.execute("ALICE DIFFERENT CHAT", alice, "new", "e3", verify, "alice-key")
     assert "ALICE PRIVATE" not in str(model.inputs[-1])
-    await runner.execute("Continue", alice, "same", "e4", verify)
+    await runner.execute("Continue", alice, "same", "e4", verify, "alice-key")
     assert "ALICE PRIVATE" in str(model.inputs[-1])
     assert "BOB PRIVATE" not in str(model.inputs[-1])
 
@@ -163,12 +163,12 @@ async def test_real_sdk_histories_are_isolated_by_principal_and_context():
 async def test_engine_reverification_denial_never_connects_or_calls_model():
     model = ScriptedModel()
     @asynccontextmanager
-    async def connect(_):
+    async def connect(_, credential):
         raise AssertionError("Denied caller connected to MCP")
         yield
     async def deny(): raise AccessDenied()
     runner = AgentRunner(settings(), Journal(":memory:"), model, connect)
-    outcome = await runner.execute("Create key", Principal("admin", "", "gateway", "admin"), "ctx", "e1", deny)
+    outcome = await runner.execute("Create key", Principal("admin", "", "gateway", "admin"), "ctx", "e1", deny, "admin-key")
     assert outcome.status == "failed"
     assert not model.inputs
 

@@ -3,6 +3,7 @@ import argparse
 import asyncio
 import copy
 import json
+import os
 
 import httpx2
 from dotenv import load_dotenv
@@ -44,7 +45,7 @@ async def main():
         # Check the hosted endpoint first, then avoid creating duplicate registrations.
         health = await client.get(settings.public_url + "/healthz")
         health.raise_for_status()
-        headers = {"Authorization": "Bearer " + settings.admin_key}
+        headers = {"Authorization": "Bearer " + os.environ["LITELLM_ADMIN_KEY"]}
         listed = await client.get(settings.gateway_url + "/v1/agents", headers=headers)
         listed.raise_for_status()
         data = listed.json()

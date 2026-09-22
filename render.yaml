@@ -29,14 +29,16 @@ services:
       - key: LITELLM_BASE_URL
         value: https://gateway.litellm-sandbox.ai/v1
       - key: LITELLM_MCP_URL
-        value: https://gateway.litellm-sandbox.ai/litellm_admin/mcp
+        value: https://gateway.litellm-sandbox.ai/personal_admin/mcp
       - key: LITELLM_MODEL
         value: openai/gpt-5.4
       - key: SLACK_BOT_TOKEN
         sync: false
       - key: SLACK_APP_TOKEN
         sync: false
-      - key: LITELLM_ADMIN_KEY
+      - key: LITELLM_MCP_ALIAS
+        value: personal_admin
+      - key: CREDENTIAL_ENCRYPTION_KEY
         sync: false
       - key: ADMIN_TOOL_NAMES
         sync: false

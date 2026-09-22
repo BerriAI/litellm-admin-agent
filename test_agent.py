@@ -12,6 +12,7 @@ from openai.types.responses import ResponseFunctionToolCall, ResponseOutputMessa
 
 from app import Settings, build_listener
 from auth import AccessDenied, Principal
+from connections import Connection
 from core import Journal, SecretBoundary, ToolBridge, ToolOutcomeUnknown, authorized_event
 from configure_mcp import registration
 
@@ -69,14 +70,20 @@ class ScriptedModel(Model):
 
 
 class FakeAuthorizer:
-    async def require_slack_admin(self, user, client):
+    async def require_slack_admin(self, user, client, bearer):
         if user != "Uadmin":
             raise AccessDenied()
         return Principal("admin@example.com", "admin@example.com", "slack", user)
 
 
+class FakeConnections:
+    def get(self, user):
+        return Connection("admin@example.com", "connection-1", "caller-key")
+
+
 def settings():
-    return Settings("Tberri", frozenset({"Uadmin"}), "https://example.com/admin/mcp", "unused", frozenset({"create_key"}), "https://example.com/v1", "unused", "test", "unused", "unused", ":memory:")
+    return Settings("Tberri", "https://example.com/personal_admin/mcp", "personal_admin",
+                    frozenset({"create_key"}), "https://example.com/v1", "test", "unused", "unused", ":memory:")
 
 
 @pytest.mark.parametrize("body", [
@@ -92,8 +99,8 @@ def test_non_admin_or_non_private_events_are_denied(body):
 async def test_real_runner_discovers_calls_and_delivers_key_only_in_private_reply():
     mcp = FakeMCP(); slack = FakeSlack(); model = ScriptedModel(); journal = Journal(":memory:")
     @asynccontextmanager
-    async def connect(_): yield mcp
-    handler = build_listener(settings(), journal, model, connect, authorizer=FakeAuthorizer())
+    async def connect(_, credential): yield mcp
+    handler = build_listener(settings(), journal, model, connect, authorizer=FakeAuthorizer(), connections=FakeConnections())
     await handler(event(), slack)
     assert len(mcp.calls) == 1
     assert "sk-created0123456789" not in json.dumps(model.inputs)
@@ -112,8 +119,8 @@ async def test_real_runner_discovers_calls_and_delivers_key_only_in_private_repl
 async def test_main_dm_followup_keeps_context_and_thread_request_stays_in_thread():
     mcp = FakeMCP(); slack = FakeSlack(); model = ScriptedModel()
     @asynccontextmanager
-    async def connect(_): yield mcp
-    handler = build_listener(settings(), Journal(":memory:"), model, connect, authorizer=FakeAuthorizer())
+    async def connect(_, credential): yield mcp
+    handler = build_listener(settings(), Journal(":memory:"), model, connect, authorizer=FakeAuthorizer(), connections=FakeConnections())
     await handler(event(), slack)
     followup = event(event_id="Ev2")
     followup["event"].update(text="What budget did you set?", ts="2.2")
@@ -128,11 +135,11 @@ async def test_main_dm_followup_keeps_context_and_thread_request_stays_in_thread
 @pytest.mark.asyncio
 async def test_denied_event_never_connects_to_mcp_or_runs_model():
     @asynccontextmanager
-    async def connect(_):
+    async def connect(_, credential):
         raise AssertionError("Unauthorized event reached MCP")
         yield
     slack = FakeSlack()
-    await build_listener(settings(), Journal(":memory:"), ScriptedModel(), connect, authorizer=FakeAuthorizer())(event(user="Uother"), slack)
+    await build_listener(settings(), Journal(":memory:"), ScriptedModel(), connect, authorizer=FakeAuthorizer(), connections=FakeConnections())(event(user="Uother"), slack)
     assert len(slack.posts) == 1
     assert "only to LiteLLM gateway admins" in slack.posts[0]["text"]
 
@@ -195,11 +202,11 @@ async def test_failed_read_allows_alternative_lookup_without_replaying_failure()
 @pytest.mark.asyncio
 async def test_connection_failure_does_not_claim_a_mutation_may_have_completed():
     @asynccontextmanager
-    async def connect(_):
+    async def connect(_, credential):
         raise ConnectionError("gateway unavailable")
         yield
     slack = FakeSlack()
-    await build_listener(settings(), Journal(":memory:"), ScriptedModel(), connect, authorizer=FakeAuthorizer())(event(), slack)
+    await build_listener(settings(), Journal(":memory:"), ScriptedModel(), connect, authorizer=FakeAuthorizer(), connections=FakeConnections())(event(), slack)
     assert "No changes were made" in slack.updates[0]["text"]
     assert "may already have completed" not in slack.updates[0]["text"]
 
@@ -236,13 +243,13 @@ def test_registration_only_selects_known_admin_routes_from_live_spec():
         "/team/info": {"get": {"operationId": "team_details"}},
         "/cache/flushall": {"post": {"operationId": "flush_everything"}},
     }}
-    payload = registration(spec, "https://gateway.example.com", "secret-placeholder")
+    payload = registration(spec, "https://gateway.example.com")
     assert payload["allowed_tools"] == ["new_key", "team_details"]
     assert payload["allow_all_keys"] is False
     assert payload["available_on_public_internet"] is False
-    assert payload["credentials"] == {"auth_value": "secret-placeholder"}
+    assert payload["credentials"] == {}
 
 
 def test_registration_refuses_empty_selection():
     with pytest.raises(ValueError):
-        registration({"paths": {}}, "https://gateway.example.com", "secret-placeholder")
+        registration({"paths": {}}, "https://gateway.example.com")

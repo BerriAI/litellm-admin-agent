@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).parent
 
 
-def registration(spec: dict, base_url: str, admin_key: str) -> dict:
+def registration(spec: dict, base_url: str) -> dict:
     inventory = json.loads((ROOT / "admin-operations.json").read_text())
     operation_ids = []
     for entry in inventory["operations"]:
@@ -22,14 +22,14 @@ def registration(spec: dict, base_url: str, admin_key: str) -> dict:
     if not operation_ids:
         raise ValueError("The proxy spec contains none of the selected admin operations")
     return {
-        "server_name": "litellm_admin",
-        "alias": "litellm_admin",
+        "server_name": "personal_admin",
+        "alias": "personal_admin",
         "description": "Keys, teams, budgets, and reporting for the private Slack admin agent",
         "url": base_url,
         "spec_path": base_url + "/openapi.json",
         "transport": "http",
         "auth_type": "bearer_token",
-        "credentials": {"auth_value": admin_key},
+        "credentials": {},
         "allowed_tools": sorted(set(operation_ids)),
         "allow_all_keys": False,
         "available_on_public_internet": False,
@@ -51,9 +51,8 @@ def main():
     with httpx2.Client(timeout=30, follow_redirects=False) as client:
         result = client.get(base_url + "/openapi.json")
         result.raise_for_status()
-        payload = registration(result.json(), base_url, admin_key)
+        payload = registration(result.json(), base_url)
         if not args.apply:
-            payload["credentials"] = {"auth_value": "<from LITELLM_ADMIN_KEY; never printed>"}
             print(json.dumps(payload, indent=2))
             return
         headers = {"Authorization": f"Bearer {admin_key}"}
@@ -64,15 +63,15 @@ def main():
             rows = rows.get("servers", rows.get("data"))
         if not isinstance(rows, list):
             raise ValueError("Unexpected server list response; no registration was changed")
-        if any(row.get("alias") == "litellm_admin" or row.get("server_name") == "litellm_admin" for row in rows):
-            raise ValueError("litellm_admin already exists; inspect it before updating. No change was made")
+        if any(row.get("alias") == "personal_admin" or row.get("server_name") == "personal_admin" for row in rows):
+            raise ValueError("personal_admin already exists; inspect it before updating. No change was made")
         try:
             created = client.post(base_url + "/v1/mcp/server", headers=headers, json=payload)
             created.raise_for_status()
         except (httpx2.TimeoutException, httpx2.NetworkError):
             raise RuntimeError("Registration outcome is uncertain. Inspect MCP Servers before retrying; this tool will not replay the request") from None
         data = created.json()
-        print(json.dumps({"status": "created", "server_id": data.get("server_id"), "alias": "litellm_admin", "operation_count": len(payload["allowed_tools"])}))
+        print(json.dumps({"status": "created", "server_id": data.get("server_id"), "alias": "personal_admin", "operation_count": len(payload["allowed_tools"])}))
 
 
 if __name__ == "__main__":

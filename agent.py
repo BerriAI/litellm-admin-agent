@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import os
 from datetime import datetime, timezone
 
+from urllib.parse import urlparse
+
 import httpx2
+from openai import AsyncOpenAI
+from agents import OpenAIChatCompletionsModel
 from agents import Agent, ModelSettings, function_tool
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
@@ -50,18 +54,16 @@ Keep replies short, concrete, and suitable for Slack. Cite the team/key alias an
 @dataclass(frozen=True)
 class Settings:
     workspace: str
-    admins: frozenset[str]
     mcp_url: str
-    mcp_key: str
+    mcp_alias: str
     tool_names: frozenset[str]
     model_url: str
-    model_key: str
     model: str
-    bot_token: str
-    app_token: str
+    bot_token: str = field(repr=False)
+    app_token: str = field(repr=False)
     db_path: str
-    admin_key: str = ""
-    service_token: str = ""
+    encryption_key: str = field(default="", repr=False)
+    service_token: str = field(default="", repr=False)
     public_url: str = ""
 
     @property
@@ -70,41 +72,58 @@ class Settings:
 
     @classmethod
     def read(cls) -> "Settings":
-        def items(name: str) -> frozenset[str]:
-            return frozenset(x.strip() for x in os.getenv(name, "").split(",") if x.strip())
         return cls(
-            os.getenv("SLACK_WORKSPACE_ID", ""), items("SLACK_ADMIN_USER_IDS"),
-            os.getenv("LITELLM_MCP_URL", ""), os.getenv("LITELLM_MCP_KEY") or os.getenv("LITELLM_ADMIN_KEY", ""), items("ADMIN_TOOL_NAMES"),
-            os.getenv("LITELLM_BASE_URL", ""), os.getenv("LITELLM_MODEL_KEY") or os.getenv("LITELLM_ADMIN_KEY", ""), os.getenv("LITELLM_MODEL", ""),
-            os.getenv("SLACK_BOT_TOKEN", ""), os.getenv("SLACK_APP_TOKEN", ""), os.getenv("STATE_DB", "data/events.sqlite3"),
-            os.getenv("LITELLM_ADMIN_KEY", ""), os.getenv("ADMIN_AGENT_SERVICE_TOKEN", ""),
-            (os.getenv("AGENT_PUBLIC_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").rstrip("/"),
+            workspace=os.getenv("SLACK_WORKSPACE_ID", ""),
+            mcp_url=os.getenv("LITELLM_MCP_URL", ""),
+            mcp_alias=os.getenv("LITELLM_MCP_ALIAS", "personal_admin"),
+            tool_names=frozenset(x.strip() for x in os.getenv("ADMIN_TOOL_NAMES", "").split(",") if x.strip()),
+            model_url=os.getenv("LITELLM_BASE_URL", ""), model=os.getenv("LITELLM_MODEL", ""),
+            bot_token=os.getenv("SLACK_BOT_TOKEN", ""), app_token=os.getenv("SLACK_APP_TOKEN", ""),
+            db_path=os.getenv("STATE_DB", "data/events.sqlite3"),
+            encryption_key=os.getenv("CREDENTIAL_ENCRYPTION_KEY", ""),
+            service_token=os.getenv("ADMIN_AGENT_SERVICE_TOKEN", ""),
+            public_url=(os.getenv("AGENT_PUBLIC_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").rstrip("/"),
         )
 
-    def validate(self, discovery_only: bool = False) -> None:
-        required = {"LITELLM_MCP_URL": self.mcp_url, "LITELLM_MCP_KEY": self.mcp_key}
-        if not discovery_only:
-            required.update({
-                "SLACK_WORKSPACE_ID": self.workspace, "LITELLM_ADMIN_KEY": self.admin_key,
-                "ADMIN_TOOL_NAMES": self.tool_names, "LITELLM_BASE_URL": self.model_url,
-                "LITELLM_MODEL_KEY": self.model_key, "LITELLM_MODEL": self.model,
-                "SLACK_BOT_TOKEN": self.bot_token, "SLACK_APP_TOKEN": self.app_token,
-            })
+    def validate(self) -> None:
+        required = {"SLACK_WORKSPACE_ID": self.workspace, "LITELLM_MCP_URL": self.mcp_url,
+                    "ADMIN_TOOL_NAMES": self.tool_names, "LITELLM_BASE_URL": self.model_url,
+                    "LITELLM_MODEL": self.model, "SLACK_BOT_TOKEN": self.bot_token,
+                    "SLACK_APP_TOKEN": self.app_token, "CREDENTIAL_ENCRYPTION_KEY": self.encryption_key,
+                    "AGENT_PUBLIC_URL or RENDER_EXTERNAL_URL": self.public_url}
         missing = [name for name, value in required.items() if not value]
         if missing:
             raise ValueError("Missing configuration: " + ", ".join(missing))
+        for url in (self.model_url, self.mcp_url, self.public_url):
+            parsed = urlparse(url)
+            if (parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password
+                    or parsed.query or parsed.fragment):
+                raise ValueError("Service URLs must be HTTPS without credentials or query parameters")
+        if self.mcp_alias != "personal_admin" or self.mcp_url != self.gateway_url + "/" + self.mcp_alias + "/mcp":
+            raise ValueError("Use the dedicated per-user MCP registration on the trusted gateway")
 
 
 @asynccontextmanager
-async def mcp_session(settings: Settings):
+async def mcp_session(settings: Settings, credential: str):
+    if not credential:
+        raise ValueError("An explicit caller credential is required")
     async with httpx2.AsyncClient(
-        headers={"x-litellm-api-key": f"Bearer {settings.mcp_key}"},
+        headers={"x-litellm-api-key": f"Bearer {credential}",
+                 f"x-mcp-{settings.mcp_alias}-authorization": f"Bearer {credential}"},
         timeout=httpx2.Timeout(60, read=120), follow_redirects=False,
     ) as client:
         async with streamable_http_client(settings.mcp_url, http_client=client) as (read, write):
             async with ClientSession(read, write, read_timeout_seconds=120) as session:
                 await session.initialize()
                 yield session
+
+
+@asynccontextmanager
+async def model_session(settings: Settings, credential: str):
+    if not credential:
+        raise ValueError("An explicit caller credential is required")
+    async with AsyncOpenAI(api_key=credential, base_url=settings.model_url, max_retries=0, timeout=120) as client:
+        yield OpenAIChatCompletionsModel(model=settings.model, openai_client=client)
 
 
 def agent_for(bridge: ToolBridge, model) -> Agent:

@@ -5,11 +5,12 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass
+from contextlib import asynccontextmanager
 from typing import Awaitable, Callable
 
 from agents import Runner, RunConfig
 
-from agent import Settings, agent_for, mcp_session
+from agent import Settings, agent_for, mcp_session, model_session
 from auth import Principal
 from core import Journal, ToolBridge, all_tools
 
@@ -22,26 +23,35 @@ class Outcome:
 
 
 class AgentRunner:
-    def __init__(self, settings: Settings, journal: Journal, model, connect=mcp_session):
+    def __init__(self, settings: Settings, journal: Journal, model=None, connect=mcp_session, make_model=model_session):
         self.settings = settings
         self.journal = journal
         self.model = model
         self.connect = connect
+        self.make_model = make_model
         self.lock = asyncio.Lock()
         self.conversations: dict[tuple[str, str], list[dict]] = {}
 
+    @asynccontextmanager
+    async def _model(self, credential):
+        if self.model is not None:
+            yield self.model
+        else:
+            async with self.make_model(self.settings, credential) as model:
+                yield model
+
     async def execute(self, text: str, principal: Principal, context: str, event_id: str,
-                      verify: Callable[[], Awaitable[None]]) -> Outcome:
+                      verify: Callable[[], Awaitable[None]], credential: str) -> Outcome:
         identity = (principal.actor, context)
         bridge = None
         async with self.lock:
             history = self.conversations.get(identity, [])
             try:
                 await verify()
-                async with self.connect(self.settings) as session:
+                async with self.connect(self.settings, credential) as session, self._model(credential) as model:
                     bridge = ToolBridge(await all_tools(session), self.settings.tool_names, session.call_tool,
                                         self.journal, event_id, ensure_authorized=verify)
-                    agent = agent_for(bridge, self.model)
+                    agent = agent_for(bridge, model)
                     agent.instructions += "\nAuthenticated requesting LiteLLM user: " + principal.user_id
                     result = await Runner.run(
                         agent, input=history + [{"role": "user", "content": text}], max_turns=16,

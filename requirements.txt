@@ -6,3 +6,4 @@ slack-bolt==1.30.0
 aiohttp==3.14.3
 python-dotenv==1.2.3
 jsonschema==4.26.0
+cryptography==50.0.1

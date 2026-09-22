@@ -24,7 +24,7 @@ def account(role="proxy_admin", **extra):
 
 
 def auth(client):
-    return AdminAuthorizer("https://gateway.example.com", "service-secret", "Tberri", client)
+    return AdminAuthorizer("https://gateway.example.com", "Tberri", client)
 
 
 def info(role="proxy_admin", **extra):
@@ -73,13 +73,13 @@ class Slack:
 
 
 @pytest.mark.asyncio
-async def test_slack_matches_exact_email_across_pages_and_refreshes_role():
-    client = Client({"users": [account(user_email="not-admin@example.com")], "total_pages": 2},
-                    {"users": [account()], "total_pages": 2}, info())
-    principal = await auth(client).require_slack_admin("Uadmin", Slack())
+async def test_slack_uses_personal_credential_and_matches_verified_email():
+    client = Client(info())
+    principal = await auth(client).require_slack_admin("Uadmin", Slack(), "personal-key")
     assert principal.actor == "slack:Uadmin:admin-id"
-    assert client.calls[-1][1]["params"] == {"user_id": "admin-id"}
-    assert client.calls[1][1]["params"]["page"] == 2
+    assert len(client.calls) == 1
+    assert client.calls[0][1]["params"] is None
+    assert client.calls[0][1]["headers"] == {"Authorization": "Bearer personal-key"}
 
 
 @pytest.mark.parametrize("extra", [{"id": "other"}, {"team_id": "other"}, {"deleted": True}, {"is_bot": True},
@@ -88,21 +88,15 @@ async def test_slack_matches_exact_email_across_pages_and_refreshes_role():
 async def test_slack_guest_bot_wrong_workspace_and_missing_email_denied(extra):
     client = Client()
     with pytest.raises(AccessDenied):
-        await auth(client).require_slack_admin("Uadmin", Slack(**extra))
+        await auth(client).require_slack_admin("Uadmin", Slack(**extra), "key")
     assert not client.calls
 
 
-@pytest.mark.parametrize("rows", [[], [account(), account(user_id="other")], [account(user_email="not-admin@example.com")]])
+@pytest.mark.parametrize("data", [info(user_email="other@example.com"), info(user_email=""), info("internal_user")])
 @pytest.mark.asyncio
-async def test_slack_email_must_be_unique_exact_match(rows):
+async def test_wrong_person_or_non_admin_key_denied(data):
     with pytest.raises(AccessDenied):
-        await auth(Client({"users": rows, "total_pages": 1})).require_slack_admin("Uadmin", Slack())
-
-
-@pytest.mark.asyncio
-async def test_slack_role_is_refreshed_not_trusted_from_list():
-    with pytest.raises(AccessDenied):
-        await auth(Client({"users": [account()], "total_pages": 1}, info("internal_user"))).require_slack_admin("Uadmin", Slack())
+        await auth(Client(data)).require_slack_admin("Uadmin", Slack(), "key")
 
 
 @pytest.mark.asyncio
@@ -111,4 +105,4 @@ async def test_slack_missing_scopes_fails_closed():
         async def users_info(self, **kwargs):
             raise RuntimeError("missing_scope")
     with pytest.raises(AuthorizationUnavailable):
-        await auth(Client()).require_slack_admin("Uadmin", MissingScope())
+        await auth(Client()).require_slack_admin("Uadmin", MissingScope(), "key")

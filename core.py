@@ -16,8 +16,9 @@ from mcp import types
 
 
 _OPERATIONS = {
-    "litellm_admin-" + item["operation_id"]: item
+    prefix + item["operation_id"]: item
     for item in json.loads((Path(__file__).parent / "admin-operations.json").read_text())["operations"]
+    for prefix in ("litellm_admin-", "personal_admin-")
 }
 
 

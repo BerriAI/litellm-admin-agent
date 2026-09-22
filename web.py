@@ -40,7 +40,7 @@ def identifier(value) -> bool:
     return isinstance(value, str) and 0 < len(value) <= 200 and all(ord(c) >= 32 for c in value)
 
 
-def create_web_app(settings, authorizer, runner, journal):
+def create_web_app(settings, authorizer, runner, journal, connections=None):
     if len(settings.service_token) < 32:
         raise ValueError("ADMIN_AGENT_SERVICE_TOKEN must have at least 32 characters")
     card = agent_card(settings.public_url)
@@ -106,7 +106,7 @@ def create_web_app(settings, authorizer, runner, journal):
         active += 1
         status = "failed"
         try:
-            outcome = await runner.execute(text, principal, context, event_id, verify)
+            outcome = await runner.execute(text, principal, context, event_id, verify, bearer)
             await verify()
             result_parts = [{"kind": "text", "text": outcome.answer}]
             for reference, secret in outcome.secrets.items():
@@ -131,4 +131,6 @@ def create_web_app(settings, authorizer, runner, journal):
     app.router.add_get("/.well-known/agent-card.json", discovery)
     app.router.add_get("/.well-known/agent.json", discovery)
     app.router.add_post("/a2a", send)
+    if connections is not None:
+        connections.add_routes(app)
     return app

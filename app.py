@@ -10,15 +10,15 @@ import signal
 
 import httpx2
 from aiohttp import web
-from agents import OpenAIChatCompletionsModel, set_tracing_disabled
+from agents import set_tracing_disabled
 from dotenv import load_dotenv
-from openai import AsyncOpenAI
 from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 
 from agent import Settings, mcp_session
 from auth import AccessDenied, AdminAuthorizer, AuthorizationUnavailable
 from core import Journal, all_tools, valid_dm_event
+from connections import ConnectionRequired, ConnectionStore, Connections
 from engine import AgentRunner
 
 
@@ -28,7 +28,7 @@ def chunks(text: str, size: int = 3000):
 
 
 def build_listener(settings: Settings, journal: Journal, model=None, connect=mcp_session,
-                   *, authorizer, runner=None):
+                   *, authorizer, connections, runner=None):
     runner = runner or AgentRunner(settings, journal, model, connect)
 
     async def handle(body, client):
@@ -42,10 +42,28 @@ def build_listener(settings: Settings, journal: Journal, model=None, connect=mcp
         pending_ts = None
         status = "failed"
         try:
-            principal = await authorizer.require_slack_admin(event["user"], client)
+            command = event["text"].strip().casefold()
+            if command == "disconnect":
+                await authorizer.slack_email(event["user"], client)
+                connections.disconnect(event["user"])
+                runner.conversations = {k: v for k, v in runner.conversations.items()
+                                        if not k[0].startswith("slack:" + event["user"] + ":")}
+                await client.chat_postMessage(channel=channel, thread_ts=thread,
+                    text="Your LiteLLM account is disconnected. Your saved credential has been removed.")
+                status = "completed"
+                return
+            if command == "connect":
+                raise ConnectionRequired()
+            connection = connections.get(event["user"])
+            principal = await authorizer.require_slack_admin(event["user"], client, connection.credential)
+            if principal.user_id != connection.user_id:
+                raise AccessDenied()
 
             async def verify():
-                if await authorizer.require_slack_admin(event["user"], client) != principal:
+                current = connections.get(event["user"])
+                if current.version != connection.version:
+                    raise AccessDenied()
+                if await authorizer.require_slack_admin(event["user"], client, connection.credential) != principal:
                     raise AccessDenied()
 
             if len(event["text"]) > 16000:
@@ -55,7 +73,7 @@ def build_listener(settings: Settings, journal: Journal, model=None, connect=mcp
             pending = await client.chat_postMessage(channel=channel, thread_ts=thread,
                 text="Working on your request…", unfurl_links=False, unfurl_media=False)
             pending_ts = pending["ts"]
-            outcome = await runner.execute(event["text"], principal, channel + ":" + (thread or "main"), event_id, verify)
+            outcome = await runner.execute(event["text"], principal, channel + ":" + (thread or "main") + ":" + connection.version, event_id, verify, connection.credential)
             # Revocation during a run must also stop private data delivery.
             await verify()
             parts = list(chunks(outcome.answer))
@@ -68,9 +86,24 @@ def build_listener(settings: Settings, journal: Journal, model=None, connect=mcp
                     text=f"{reference}: `{secret}`\nSave this key securely. It was kept out of the model’s tool results.",
                     unfurl_links=False, unfurl_media=False)
             status = outcome.status
+        except ConnectionRequired:
+            status = "connection_required"
+            try:
+                link = await connections.link(event["user"])
+                answer = (f"Connect your own LiteLLM admin account here: <{link}|Connect account>\n"
+                          "This private link expires in 10 minutes. Enter your key on the page, never in Slack. "
+                          "Then send your request again.")
+                if pending_ts:
+                    await client.chat_update(channel=channel, ts=pending_ts, text="Your account connection changed. The run stopped; inspect gateway state before retrying changes.")
+                else:
+                    await client.chat_postMessage(channel=channel, thread_ts=thread, text=answer,
+                                                  unfurl_links=False, unfurl_media=False)
+            except (AccessDenied, AuthorizationUnavailable):
+                await client.chat_postMessage(channel=channel, thread_ts=thread,
+                    text="I couldn’t verify your BerriAI Slack membership. Please try again later.")
         except (AccessDenied, AuthorizationUnavailable) as exc:
             status = "denied" if isinstance(exc, AccessDenied) else "authorization_unavailable"
-            answer = ("This app is available only to LiteLLM gateway admins. Your BerriAI Slack email must match your LiteLLM proxy-admin account."
+            answer = ("This app is available only to LiteLLM gateway admins. Your BerriAI Slack email must match your LiteLLM proxy-admin account. Send connect to reconnect your own key."
                       if isinstance(exc, AccessDenied) else "I can’t verify your admin access right now. Please try again later.")
             if pending_ts:
                 answer += " The run stopped; check any requested changes in the gateway before retrying."
@@ -99,18 +132,17 @@ async def main():
     os.umask(0o077)
     set_tracing_disabled(True)
     settings = Settings.read()
-    settings.validate(discovery_only=args.list_tools)
+    settings.validate()
     slack_enabled = os.getenv("SLACK_ENABLED", "true").lower() in ("true", "1")
     if not slack_enabled and not args.web and not args.check and not args.list_tools:
         raise ValueError("Enable Slack or use --web")
-    async with mcp_session(settings) as session:
-        available = await all_tools(session)
     if args.list_tools:
+        # Setup-only credential; the running service never reads this variable.
+        credential = os.environ["LITELLM_SETUP_KEY"]
+        async with mcp_session(settings, credential) as session:
+            available = await all_tools(session)
         print(json.dumps([{"name": t.name, "description": t.description} for t in available], indent=2))
         return
-    missing = settings.tool_names - {t.name for t in available}
-    if missing:
-        raise ValueError("Configured tools are missing: " + ", ".join(sorted(missing)))
     slack_app = AsyncApp(token=settings.bot_token)
     identity = await slack_app.client.auth_test()
     if identity.get("team_id") != settings.workspace:
@@ -119,16 +151,15 @@ async def main():
     if slack_enabled or args.check:
         await slack_app.client.users_info(user=identity["user_id"])
     if args.check:
-        print(f"Slack identity and user lookup verified; {len(settings.tool_names)} tools available. No messages or administrative changes sent.")
+        print(f"Slack identity and user lookup verified; {len(settings.tool_names)} tools configured. No messages or administrative changes sent.")
         return
-    async with httpx2.AsyncClient() as auth_client, AsyncOpenAI(
-        api_key=settings.model_key, base_url=settings.model_url, max_retries=0, timeout=120,
-    ) as model_client:
-        authorizer = AdminAuthorizer(settings.gateway_url, settings.admin_key, settings.workspace, auth_client)
-        model = OpenAIChatCompletionsModel(model=settings.model, openai_client=model_client)
+    async with httpx2.AsyncClient() as auth_client:
+        authorizer = AdminAuthorizer(settings.gateway_url, settings.workspace, auth_client)
         journal = Journal(settings.db_path)
-        runner = AgentRunner(settings, journal, model)
-        slack_app.event("message")(build_listener(settings, journal, authorizer=authorizer, runner=runner))
+        connections = Connections(settings, ConnectionStore(journal.db, settings.encryption_key), authorizer, slack_app.client)
+        runner = AgentRunner(settings, journal)
+        slack_app.event("message")(build_listener(settings, journal, authorizer=authorizer,
+                                                  connections=connections, runner=runner))
         socket = AsyncSocketModeHandler(slack_app, settings.app_token)
         server = None
         stop = asyncio.Event()
@@ -138,7 +169,7 @@ async def main():
         try:
             if args.web:
                 from web import create_web_app
-                server = web.AppRunner(create_web_app(settings, authorizer, runner, journal), access_log=None)
+                server = web.AppRunner(create_web_app(settings, authorizer, runner, journal, connections), access_log=None)
                 await server.setup()
                 await web.TCPSite(server, "0.0.0.0", int(os.getenv("PORT", "10000"))).start()
             if slack_enabled:

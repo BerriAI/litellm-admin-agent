@@ -29,12 +29,11 @@ class Principal:
 
 
 class AdminAuthorizer:
-    def __init__(self, base_url: str, admin_key: str, workspace: str, client: Any):
+    def __init__(self, base_url: str, workspace: str, client: Any):
         parsed = urlparse(base_url)
         if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
             raise ValueError("The trusted gateway must be an HTTPS URL without embedded credentials")
         self.base_url = base_url.rstrip("/")
-        self.admin_key = admin_key
         self.workspace = workspace
         self.client = client
 
@@ -78,7 +77,7 @@ class AdminAuthorizer:
             raise AccessDenied()
         return Principal(user["user_id"], str(user.get("user_email") or ""), "gateway", user["user_id"])
 
-    async def require_slack_admin(self, slack_user: str, slack: Any) -> Principal:
+    async def slack_email(self, slack_user: str, slack: Any) -> str:
         try:
             response = await slack.users_info(user=slack_user)
             user = response.get("user")
@@ -98,25 +97,11 @@ class AdminAuthorizer:
         if not isinstance(email, str) or not email.strip():
             raise AccessDenied()
         email = email.strip().casefold()
-        # /user/list performs partial matching. Require exactly one *exact* email
-        # match over all bounded pages, then refresh that record by immutable ID.
-        records = []
-        for page in range(1, 6):
-            data = await self._get("/user/list", self.admin_key,
-                                   {"user_email": email, "page": page, "page_size": 100})
-            rows = data.get("users")
-            total_pages = data.get("total_pages")
-            if not isinstance(rows, list) or not isinstance(total_pages, int) or not 0 <= total_pages <= 5:
-                raise AuthorizationUnavailable()
-            records.extend(r for r in rows if isinstance(r, dict)
-                           and str(r.get("user_email") or "").strip().casefold() == email)
-            if page >= total_pages:
-                break
-        if len(records) != 1 or not isinstance(records[0].get("user_id"), str):
+        return email
+
+    async def require_slack_admin(self, slack_user: str, slack: Any, bearer: str) -> Principal:
+        email = await self.slack_email(slack_user, slack)
+        account = await self.require_gateway_admin(bearer)
+        if not account.email.strip() or account.email.strip().casefold() != email:
             raise AccessDenied()
-        user_id = records[0]["user_id"]
-        data = await self._get("/user/info", self.admin_key, {"user_id": user_id})
-        account = self._admin(data.get("user_info"))
-        if account["user_id"] != user_id or str(account.get("user_email") or "").strip().casefold() != email:
-            raise AccessDenied()
-        return Principal(user_id, email, "slack", slack_user)
+        return Principal(account.user_id, email, "slack", slack_user)
