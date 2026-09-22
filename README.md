@@ -138,4 +138,8 @@ python scripts/smoke_container.py
 
 CI runs the tests and boots the real image, checking readiness, runtime assets, non-root execution and replay protection after a container restart. The smoke test uses no external credentials and sends no Slack messages. Update dependency inputs in `requirements.in` / `requirements-dev.in`, then regenerate both hash-locked files with `uv pip compile --python-version 3.12 --generate-hashes`.
 
-Source availability and licensing are separate from deployment setup. Before a public launch, the repository owner must make the source accessible to the intended users and publish the intended license. This change does not change repository visibility or grant an open-source license.
+## License
+
+Licensed under the [MIT License](LICENSE). You can use, modify, self-host and redistribute this software, including commercially, while retaining the copyright and license notice.
+
+Before a public launch, the repository owner must make the source accessible to the intended users.

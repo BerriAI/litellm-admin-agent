@@ -10,7 +10,7 @@ The backend is restricted to a reviewed route inventory. It rechecks the caller 
 
 Before exposing a new deployment to users, its operator should verify:
 
-- The repository/release is accessible to those users and the owner has published the intended license.
+- The repository/release is accessible to those users and distributions include the MIT license notice.
 - The service uses its own Slack app, gateway URLs, model, encryption key and service token.
 - TLS works; login material and Authorization headers are excluded from proxy logs.
 - `doctor.py` passes against the target gateway. A real admin can connect and perform a read in Slack; a regular user and mismatched email are denied.

@@ -1,5 +1,6 @@
 **
 !requirements.txt
+!LICENSE
 !agent.py
 !app.py
 !auth.py
