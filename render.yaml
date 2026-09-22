@@ -37,7 +37,8 @@ services:
       - key: LITELLM_MCP_ALIAS
         value: personal_admin
       - key: CONNECTION_AUTH_MODE
-        value: api_key
+        # Choose api_key or sso at creation; keep that choice on later syncs.
+        sync: false
       - key: ADMIN_READ_ONLY
         value: 'false'
       - key: CREDENTIAL_ENCRYPTION_KEY

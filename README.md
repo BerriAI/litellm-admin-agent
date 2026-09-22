@@ -44,7 +44,7 @@ Set these values in `.env`. For Render, enter the same settings under your servi
 
 - **Gateway URL:** set `LITELLM_BASE_URL`, for example `https://gateway.example.com/v1`.
 - **Model:** set `LITELLM_MODEL` to a model name your admins can use on that gateway.
-- **API-key login:** keep `CONNECTION_AUTH_MODE=api_key`. Users enter their own proxy-admin virtual key on a private browser page. Keep keys out of Slack messages.
+- **API-key login:** set `CONNECTION_AUTH_MODE=api_key`. Users enter their own proxy-admin virtual key on a private browser page. Keep keys out of Slack messages.
 - **SSO login:** set `CONNECTION_AUTH_MODE=sso`. Configure [SSO and the callback URL on your gateway](docs/compatibility.md#optional-browser-sso) before using this mode.
 - **Agent URL:** set `AGENT_PUBLIC_URL` to the agent’s HTTPS address, such as `https://admin.example.com`, without a path. For Render, fill this into your local `.env` after deployment.
 
@@ -56,7 +56,8 @@ You choose **one login method for the deployment**. Each Slack user connects the
 
 - Create a Blueprint from this repository or your fork using [`render.yaml`](render.yaml).
 - Choose a paid plan with a persistent disk and keep one instance.
-- Enter your gateway, model, Slack settings and generated `CREDENTIAL_ENCRYPTION_KEY`. Choose your `CONNECTION_AUTH_MODE` in the service’s **Environment** tab.
+- Enter your gateway, model, Slack settings and generated `CREDENTIAL_ENCRYPTION_KEY`. When Render asks for `CONNECTION_AUTH_MODE`, enter `api_key` or `sso`.
+- To change the login method later, update `CONNECTION_AUTH_MODE` in the service’s **Environment** tab and redeploy. Blueprint updates keep your choice.
 - Deploy, then copy the service’s HTTPS URL into your local `.env` as `AGENT_PUBLIC_URL`.
 - Keep the service token that Render generates. You need it for [optional gateway Agents registration](docs/compatibility.md#optional-gateway-agents--a2a).
 
