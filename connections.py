@@ -10,6 +10,7 @@ import logging
 import secrets
 import time
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 
 from aiohttp import web
 from cryptography.fernet import Fernet, InvalidToken
@@ -141,7 +142,7 @@ PAGE_HEADERS = {
     # connection URL as a referrer to another site.
     "Cache-Control": "no-store", "Referrer-Policy": "same-origin",
     "X-Frame-Options": "DENY", "X-Content-Type-Options": "nosniff",
-    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+    "Content-Security-Policy": "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
 }
 COOKIE = "__Host-litellm-connect"
 
@@ -151,7 +152,8 @@ def page(title: str, body: str, status=200):
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{html.escape(title)}</title><style>body{{font:17px system-ui;max-width:520px;margin:10vh auto;padding:24px;color:#18252f}}
 input,select,button,.button{{font:inherit;padding:12px;box-sizing:border-box;width:100%;margin:12px 0}}button,.button{{display:block;text-align:center;text-decoration:none;background:#185c48;color:white;border:0;border-radius:6px;cursor:pointer}}p{{line-height:1.6}}small{{color:#556}}code{{font-size:28px;letter-spacing:3px}}</style>
-<h1>{html.escape(title)}</h1>{body}</html>""")
+<main id="connection"><h1>{html.escape(title)}</h1>{body}</main>
+<script src="/connect.js" defer></script></html>""")
 
 
 class Connections:
@@ -179,8 +181,14 @@ class Connections:
         return self.settings.public_url + "/connect/" + token
 
     def add_routes(self, app):
+        app.router.add_get("/connect.js", self.script)
         app.router.add_get("/connect/{token}", self.show)
         app.router.add_post("/connect/{token}", self.connect)
+
+    async def script(self, request):
+        return web.Response(content_type="application/javascript",
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+            text=Path(__file__).with_name("connect.js").read_text())
 
     async def show(self, request):
         token = request.match_info["token"]
@@ -199,7 +207,7 @@ class Connections:
         cookie = self.store.cipher.encrypt(json.dumps({"link": digest(token), "csrf": csrf}).encode()).decode()
         result = page("Connect your LiteLLM account", f"""<p>Sign in with your BerriAI account through LiteLLM SSO. Your gateway email must match your Slack email, and your account must be a LiteLLM proxy admin.</p>
 <p>You’ll confirm a short verification code on the gateway. Model requests and admin actions will use your own account. Your session is encrypted before it is saved.</p>
-<form method="post"><input type="hidden" name="csrf" value="{csrf}">
+<form method="post" data-sso-action="start"><input type="hidden" name="csrf" value="{csrf}">
 <button type="submit" name="action" value="start">Continue with LiteLLM SSO</button></form>
 <small>No API key needed. Send “disconnect” in Slack to remove the saved session. When your session expires, send “connect” to sign in again.</small>""")
         result.set_cookie(COOKIE, cookie, secure=True, httponly=True, samesite="Strict", max_age=600, path="/")
@@ -223,7 +231,7 @@ class Connections:
             options = "".join(f'<option value="{html.escape(t, quote=True)}">{html.escape(alias)} ({html.escape(t)})</option>'
                               for t, alias in pending["teams"])
             return page("Choose your LiteLLM team", f"""<p>Choose the team to use for model access and usage attribution. Your current gateway admin permissions will still be verified.</p>
-<form method="post"><input type="hidden" name="csrf" value="{csrf}">
+<form method="post" data-sso-action="team"><input type="hidden" name="csrf" value="{csrf}">
 <label for="team_id">Your team</label><select id="team_id" name="team_id" required>{options}</select>
 <button type="submit" name="action" value="check">Finish connecting</button></form>""")
         flow = DeviceFlow(**pending["flow"])
@@ -231,9 +239,9 @@ class Connections:
         notice = "<p><strong>Still waiting for sign-in.</strong> Complete SSO and confirm the code in the gateway tab, then try again.</p>" if waiting else ""
         return page("Sign in to LiteLLM", f"""{notice}<p>Open LiteLLM below and sign in with the same email you use in Slack. When it asks for a verification code, enter:</p>
 <p><code>{html.escape(flow.user_code)}</code></p>
-<a class="button" href="{url}" target="_blank" rel="noopener noreferrer">Open LiteLLM SSO</a>
-<p>After confirming the code, return to this tab to finish connecting.</p>
-<form method="post"><input type="hidden" name="csrf" value="{csrf}">
+<a class="button" data-sso-link href="{url}" target="_blank" rel="noopener noreferrer">Open LiteLLM SSO</a>
+<p>SSO opens in a new tab using the sign-in provider configured on your gateway. This page will connect automatically after you confirm the code. If asked, return here to choose your team.</p>
+<form method="post" data-sso-action="check"><input type="hidden" name="csrf" value="{csrf}">
 <button type="submit" name="action" value="check">I’ve signed in — finish connecting</button></form>
 <small>This sign-in expires after 10 minutes. Only enter this code on your LiteLLM gateway.</small>""")
 
