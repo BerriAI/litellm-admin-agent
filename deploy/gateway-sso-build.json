@@ -1,0 +1,10 @@
+{
+  "gateway_source_commit": "445c1cc0e04bd98e226c917232c60bab0f20d46a",
+  "gateway_source_branch": "litellm_hosted_admin_sso",
+  "base_image": "654278500801.dkr.ecr.us-east-1.amazonaws.com/litellm/backend@sha256:7d6078854024451567480419d77f45fbd5a146c7cb7e5cdd615a2a7a7390bb58",
+  "patched_image": "654278500801.dkr.ecr.us-east-1.amazonaws.com/litellm/backend@sha256:da60f7739a6736eef248f60275443409103c0a809122e9dec01d2921ba996075",
+  "files": {
+    "litellm/proxy/_experimental/mcp_server/gateway_dcr_flow.py": "c19633c2161b44271003a77f855de1f626ea1e2523ed8f567dd2548f8e4fa858",
+    "litellm/proxy/common_utils/html_forms/native_client_consent.py": "9dc7b0583df9d7ada10bcc1161f73d4aaa4e6e8235d415451f82a4e67b4f16b5"
+  }
+}

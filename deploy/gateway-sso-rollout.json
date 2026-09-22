@@ -1,0 +1,20 @@
+{
+  "spec": {
+    "template": {
+      "spec": {
+        "containers": [
+          {
+            "name": "backend",
+            "image": "654278500801.dkr.ecr.us-east-1.amazonaws.com/litellm/backend@sha256:da60f7739a6736eef248f60275443409103c0a809122e9dec01d2921ba996075",
+            "env": [
+              {
+                "name": "LITELLM_PROXY_API_OAUTH_REDIRECT_URIS",
+                "value": "https://litellm-admin-agent.onrender.com/oauth/callback"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}
