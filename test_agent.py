@@ -243,13 +243,15 @@ def test_registration_only_selects_known_admin_routes_from_live_spec():
         "/team/info": {"get": {"operationId": "team_details"}},
         "/cache/flushall": {"post": {"operationId": "flush_everything"}},
     }}
-    payload = registration(spec, "https://gateway.example.com")
+    payload = registration(spec, "https://gateway.example.com", "https://agent.example.com")
     assert payload["allowed_tools"] == ["new_key", "team_details"]
-    assert payload["allow_all_keys"] is False
+    assert payload["allow_all_keys"] is True
+    assert payload["url"] == "https://agent.example.com/admin-api"
+    assert payload["spec_path"] == "https://gateway.example.com/openapi.json"
     assert payload["available_on_public_internet"] is False
     assert payload["credentials"] == {}
 
 
 def test_registration_refuses_empty_selection():
     with pytest.raises(ValueError):
-        registration({"paths": {}}, "https://gateway.example.com")
+        registration({"paths": {}}, "https://gateway.example.com", "https://agent.example.com")

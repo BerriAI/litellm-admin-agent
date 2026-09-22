@@ -17,10 +17,10 @@ from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 
 from agent import Settings, mcp_session
 from auth import AccessDenied, AdminAuthorizer, AuthorizationUnavailable
-from access import AdminToolAccess
 from core import Journal, all_tools, valid_dm_event
 from connections import ConnectionRequired, ConnectionStore, Connections
 from engine import AgentRunner
+from admin_api import add_admin_api_routes
 
 
 def chunks(text: str, size: int = 3000):
@@ -157,10 +157,8 @@ async def main():
     async with httpx2.AsyncClient() as auth_client:
         authorizer = AdminAuthorizer(settings.gateway_url, settings.workspace, auth_client)
         journal = Journal(settings.db_path)
-        tool_access = AdminToolAccess(authorizer, settings.mcp_alias, settings.mcp_server_id)
-        connections = Connections(settings, ConnectionStore(journal.db, settings.encryption_key), authorizer,
-                                  slack_app.client, ensure_access=tool_access.ensure)
-        runner = AgentRunner(settings, journal, ensure_access=tool_access.ensure)
+        connections = Connections(settings, ConnectionStore(journal.db, settings.encryption_key), authorizer, slack_app.client)
+        runner = AgentRunner(settings, journal)
         slack_app.event("message")(build_listener(settings, journal, authorizer=authorizer,
                                                   connections=connections, runner=runner))
         socket = AsyncSocketModeHandler(slack_app, settings.app_token)
@@ -172,7 +170,9 @@ async def main():
         try:
             if args.web:
                 from web import create_web_app
-                server = web.AppRunner(create_web_app(settings, authorizer, runner, journal, connections), access_log=None)
+                web_app = create_web_app(settings, authorizer, runner, journal, connections)
+                add_admin_api_routes(web_app, settings.gateway_url, authorizer, auth_client)
+                server = web.AppRunner(web_app, access_log=None)
                 await server.setup()
                 await web.TCPSite(server, "0.0.0.0", int(os.getenv("PORT", "10000"))).start()
             if slack_enabled:

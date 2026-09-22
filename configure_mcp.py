@@ -12,7 +12,10 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).parent
 
 
-def registration(spec: dict, base_url: str) -> dict:
+def registration(spec: dict, base_url: str, agent_url: str) -> dict:
+    parsed = urlparse(agent_url)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("Configure the HTTPS admin agent URL without credentials or query parameters")
     inventory = json.loads((ROOT / "admin-operations.json").read_text())
     operation_ids = []
     for entry in inventory["operations"]:
@@ -25,13 +28,15 @@ def registration(spec: dict, base_url: str) -> dict:
         "server_name": "personal_admin",
         "alias": "personal_admin",
         "description": "Keys, teams, budgets, and reporting for the private Slack admin agent",
-        "url": base_url,
+        "url": agent_url.rstrip("/") + "/admin-api",
         "spec_path": base_url + "/openapi.json",
         "transport": "http",
         "auth_type": "bearer_token",
         "credentials": {},
         "allowed_tools": sorted(set(operation_ids)),
-        "allow_all_keys": False,
+        # The backend checks the caller's live proxy_admin role for every call.
+        # Gateway discovery is open to keys so team/key MCP scopes need no grants.
+        "allow_all_keys": True,
         "available_on_public_internet": False,
     }
 
@@ -51,7 +56,7 @@ def main():
     with httpx2.Client(timeout=30, follow_redirects=False) as client:
         result = client.get(base_url + "/openapi.json")
         result.raise_for_status()
-        payload = registration(result.json(), base_url)
+        payload = registration(result.json(), base_url, os.getenv("AGENT_PUBLIC_URL", ""))
         if not args.apply:
             print(json.dumps(payload, indent=2))
             return

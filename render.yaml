@@ -38,8 +38,6 @@ services:
         sync: false
       - key: LITELLM_MCP_ALIAS
         value: personal_admin
-      - key: LITELLM_MCP_SERVER_ID
-        value: ef03105f-8be2-458b-9732-d6cd96f21cc8
       - key: CREDENTIAL_ENCRYPTION_KEY
         sync: false
       - key: ADMIN_TOOL_NAMES

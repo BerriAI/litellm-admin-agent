@@ -14,11 +14,11 @@ The dedicated `personal_admin` MCP registration has 62 operations and **no store
 
 Any BerriAI member can find **LiteLLM Admin** in Slack Apps and open a DM. Send **connect** for a private, single-use link that expires in ten minutes. On the HTTPS page, enter your own LiteLLM personal admin key. The agent verifies the key’s current `proxy_admin` role and an exact email match to your verified Slack profile before saving it encrypted. Never put your key in Slack. Send **disconnect** to delete the saved connection and invalidate pending links. Revoked or expired keys require reconnecting.
 
-After identity verification, the app automatically grants the connecting key access to the shared `personal_admin` MCP server if needed. Existing Slack connections and gateway callers receive the same enrollment check before their next operation. Enrollment authenticates `/key/update` with that admin’s own key, adds only the configured server ID, and preserves other server grants, model/budget settings, and per-tool restrictions. An explicit `no-mcp-servers` selection is replaced by the one requested admin-server grant. No global `allow_all_keys` setting or shared execution credential is used. The gateway caches permissions, so first activation can take about a minute; the app verifies effective access before continuing. Keys whose team or route restrictions prevent enrollment fail with an access-specific message.
+The shared `personal_admin` MCP server authorizes operations by the caller’s live `proxy_admin` role. Its backend is this service’s `/admin-api` endpoint, which forwards only the 62 selected gateway routes with the same personal bearer and the real caller’s audit identity. No key or team permission changes are needed. The gateway registration uses `allow_all_keys=true` for discovery; actual calls are independently denied to ordinary users, viewers, missing credentials, and revoked admins by the backend. The MCP name and tool schemas may therefore be discoverable to other authenticated gateway users. The server is not anonymous/public and stores no backend credential.
 
 Guests, bots, users from other workspaces, viewers, and ordinary gateway users cannot operate the agent. Slack owner/admin status alone does not grant gateway administration. No shared `LITELLM_ADMIN_KEY`, model key, or MCP key is read by the running service. Old environment values do not provide a fallback.
 
-Both model requests and administrative tool calls use the requesting user’s personal credential. The credential is sent as gateway MCP authentication and as `x-mcp-personal_admin-authorization: Bearer …` for the underlying OpenAPI request. The model never receives that credential as text. This preserves native gateway identity and credential restrictions; model access and usage are also associated with that credential.
+Both model requests and administrative tool calls use the requesting user’s personal credential. The credential is sent as gateway MCP authentication and as `x-mcp-personal_admin-authorization: Bearer …` to the admin-only backend, which forwards it to the gateway API. The model never receives that credential as text. This preserves native gateway identity and API/model restrictions; model access and usage are also associated with that credential.
 
 Gateway callers supply their own LiteLLM bearer on each request and do not need a Slack connection. The gateway forwards it plus a private service token; the agent validates `/user/info` and executes using that same bearer. Claimed role/user headers or message metadata grant no access. Access is rechecked before execution, each admin tool, and result delivery. Disconnecting during a Slack request prevents subsequent tools and private result delivery; it cannot undo an operation already sent.
 
@@ -40,7 +40,7 @@ Generated virtual keys are removed from model tool results and sent separately t
 
 - `app.py`: Slack Socket Mode and process lifecycle.
 - `auth.py`: Slack profile/email matching and live LiteLLM role checks.
-- `access.py`: automatic, verified admin MCP enrollment using the caller’s own key.
+- `admin_api.py`: role-gated backend for the shared MCP server; selected routes only and no shared credentials.
 - `connections.py`: private connection page, CSRF protection, expiring links and encrypted personal credentials.
 - `agent.py`: configuration, MCP connection and model instructions.
 - `engine.py`: shared Agents SDK runner and conversation isolation.
@@ -55,7 +55,7 @@ Use Python 3.12, a virtual environment, and `pip install -r requirements-dev.txt
 
 The BerriAI Slack app is `A0C3AE23W9H`; use the existing app rather than creating another. `slack-manifest.json` adds `users:read` and `users:read.email` to the existing `chat:write` and `im:history` permissions. Those scopes are already installed in BerriAI. Keep Socket Mode enabled with the existing `connections:write` app token and `message.im` events. The app’s Messages tab allows DMs.
 
-Set `LITELLM_MCP_URL=https://gateway.litellm-sandbox.ai/personal_admin/mcp`, `LITELLM_MCP_ALIAS=personal_admin`, and `LITELLM_MCP_SERVER_ID=ef03105f-8be2-458b-9732-d6cd96f21cc8`. The ID defaults to the existing sandbox registration for compatibility with existing deployments; set it explicitly for a different registration. `ADMIN_TOOL_NAMES` must contain the exact discovered names including the `personal_admin-` prefix. Generate `CREDENTIAL_ENCRYPTION_KEY` with `cryptography.fernet.Fernet.generate_key()` and keep it stable across deploys. Losing or replacing it makes existing saved credentials unreadable, requiring admins to reconnect.
+Set `LITELLM_MCP_URL=https://gateway.litellm-sandbox.ai/personal_admin/mcp` and `LITELLM_MCP_ALIAS=personal_admin`. The MCP registration must use `url=https://litellm-admin-agent.onrender.com/admin-api`, `spec_path=https://gateway.litellm-sandbox.ai/openapi.json`, empty stored credentials, and the selected operation allowlist. `allow_all_keys=true` is safe only with this role-gated backend; never enable it while the registration points directly at the gateway API. `ADMIN_TOOL_NAMES` must contain the exact discovered names including the `personal_admin-` prefix. Generate `CREDENTIAL_ENCRYPTION_KEY` with `cryptography.fernet.Fernet.generate_key()` and keep it stable across deploys. Losing or replacing it makes existing saved credentials unreadable, requiring admins to reconnect.
 
 Commands:
 
@@ -107,7 +107,7 @@ Verify against the actual deployed gateway:
 5. Slack allows an actual matching proxy admin and denies a non-admin.
 6. During a future migration, set the new listener to `SLACK_ENABLED=false` until the previous listener is stopped. The current cutover is complete: Render uses `SLACK_ENABLED=true`; the Mac LaunchAgent is disabled and unloaded. Retain the Mac files for rollback. Copy the current SQLite journal using SQLite’s backup API if continuity is needed. Never copy a live database file directly.
 
-Live sandbox enrollment checks start with a fresh restricted admin key, grant access using that same key, wait for effective visibility, and invoke a read-only identity tool. They also verify unrelated restrictions remain intact and an ordinary user cannot enroll. Temporary test users and keys are removed afterward.
+Verification covers the actual hosted role gate, native MCP caller forwarding, read-only admin tool use, and ordinary-user rejection. Neither existing keys nor team grants are modified. Temporary test users and keys are removed afterward.
 
 ## Known scope and limits
 

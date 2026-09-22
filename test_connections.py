@@ -9,7 +9,6 @@ from aiohttp.test_utils import TestClient, TestServer
 from cryptography.fernet import Fernet
 
 from auth import AccessDenied, Principal
-from access import ToolAccessUnavailable
 from connections import COOKIE, ConnectionRequired, ConnectionStore, Connections
 from core import Journal
 from test_agent import settings
@@ -149,41 +148,6 @@ async def test_non_admin_or_wrong_email_does_not_create_connection(service):
     path, data, headers = await form(service)
     auth.denied = True
     assert (await client.post(path, data=data, headers=headers)).status == 403
-    with pytest.raises(ConnectionRequired): connections.get("Ualice")
-
-
-@pytest.mark.asyncio
-async def test_connect_enrolls_only_after_email_verification_and_before_saving(service):
-    client, connections, auth = service
-    calls = []
-    async def ensure(principal, credential):
-        assert auth.calls == [("Ualice", credential)]
-        with pytest.raises(ConnectionRequired): connections.get("Ualice")
-        calls.append((principal.user_id, credential))
-    connections.ensure_access = ensure
-    path, data, headers = await form(service)
-    assert (await client.post(path, data=data, headers=headers)).status == 200
-    assert calls == [("alice", "alice-personal-secret")]
-    assert connections.get("Ualice").user_id == "alice"
-
-
-@pytest.mark.asyncio
-async def test_rejected_identity_never_enrolls_and_enrollment_failure_never_saves(service):
-    client, connections, auth = service
-    calls = []
-    async def ensure(*args):
-        calls.append(True)
-        raise ToolAccessUnavailable()
-    connections.ensure_access = ensure
-    path, data, headers = await form(service)
-    auth.denied = True
-    assert (await client.post(path, data=data, headers=headers)).status == 403
-    assert not calls
-    auth.denied = False
-    path, data, headers = await form(service)
-    result = await client.post(path, data=data, headers=headers)
-    assert result.status == 503
-    assert "Couldn’t enable admin tools" in await result.text()
     with pytest.raises(ConnectionRequired): connections.get("Ualice")
 
 
