@@ -8,11 +8,19 @@ Private source: https://github.com/BerriAI/litellm-admin-agent. The service is l
 
 Render service: `srv-daoudt5g1s2s738nju1g`. Blueprint: `exs-daou10ijnfac73e6q0g0`. Gateway agent: `litellm-admin`, ID `b55a5cc9-bb4d-4f87-8969-20bb4439494d`. Invoke through `https://gateway.litellm-sandbox.ai/a2a/b55a5cc9-bb4d-4f87-8969-20bb4439494d` using your own bearer credential.
 
-The dedicated `personal_admin` MCP registration has 62 operations and **no stored backend credential**. Live read-only checks verified caller identity, rejected missing/invalid backend credentials, and completed a gateway identity/budget lookup. Hosted checks also rejected duplicate request IDs and ordinary users with spoofed admin metadata. The original `litellm_admin` registration remains separate for the stopped Mac bot. Each Slack admin connects their own key.
+The dedicated `personal_admin` MCP registration has 62 operations and **no stored backend credential**. Live read-only checks verified caller identity, rejected missing/invalid backend credentials, and completed a gateway identity/budget lookup. Hosted checks also rejected duplicate request IDs and ordinary users with spoofed admin metadata. The original `litellm_admin` registration remains separate for the stopped Mac bot. Each Slack admin connects their own account through LiteLLM SSO.
 
 ## Who can use it
 
-Any BerriAI member can find **LiteLLM Admin** in Slack Apps and open a DM. Send **connect** for a private, single-use link that expires in ten minutes. On the HTTPS page, enter your own LiteLLM personal admin key. The agent verifies the key’s current `proxy_admin` role and an exact email match to your verified Slack profile before saving it encrypted. Never put your key in Slack. Send **disconnect** to delete the saved connection and invalidate pending links. Revoked or expired keys require reconnecting.
+Any BerriAI member can find **LiteLLM Admin** in Slack Apps and open a DM.
+
+1. Send **connect** and open the private link (valid for ten minutes).
+2. Choose **Continue with LiteLLM SSO**, then **Open LiteLLM SSO**.
+3. Sign in using the same email as Slack. Enter the short verification code from the connection page when LiteLLM asks for it. The gateway currently labels this page “CLI Login”.
+4. Return to the connection page and choose **I’ve signed in — finish connecting**. If you belong to multiple teams, choose one for model access and usage attribution.
+5. Return to Slack and send your request.
+
+No API key is entered. The agent verifies the resulting session against the gateway’s current `proxy_admin` role and an exact email match to the verified Slack profile before saving it encrypted. Send **disconnect** to delete the saved session and invalidate pending links/sign-ins. An expired session requires another SSO sign-in. Existing saved personal-key connections remain usable until replaced or disconnected.
 
 The shared `personal_admin` MCP server authorizes operations by the caller’s live `proxy_admin` role. Its backend is this service’s `/admin-api` endpoint, which forwards only the 62 selected gateway routes with the same personal bearer and the real caller’s audit identity. No key or team permission changes are needed. The gateway registration uses `allow_all_keys=true` for discovery; actual calls are independently denied to ordinary users, viewers, missing credentials, and revoked admins by the backend. The MCP name and tool schemas may therefore be discoverable to other authenticated gateway users. The server is not anonymous/public and stores no backend credential.
 
@@ -24,7 +32,9 @@ Gateway callers supply their own LiteLLM bearer on each request and do not need 
 
 Gateway registry metadata may be visible to non-admins. The backend independently blocks their operations; registration alone is not an admin-only UI visibility control.
 
-The gateway’s native proxy-credential OAuth flow currently restricts redirects to loopback addresses. This hosted version therefore uses personal-key connection, not browser SSO or automatic OAuth refresh.
+Sign-in uses LiteLLM’s device flow (`POST /sso/cli/start`, browser SSO, then `/sso/cli/poll/{login_id}`), the same flow as `lite login`. The polling secret stays encrypted on Render; the browser only sees the verification code and gateway login URL. Polling happens when the user clicks the finish button, with strict Origin, CSRF and browser binding. Team selections are limited to memberships returned by LiteLLM. A new connect link or disconnect invalidates an in-flight login before it can save a credential. No hosted OAuth redirect exception, shared admin key, IdP client secret, or gateway configuration change is needed.
+
+This flow issues a time-limited personal session, not a refresh token. LiteLLM defaults to 24 hours; the gateway’s `CLI_JWT_EXPIRATION_HOURS` / `LITELLM_CLI_JWT_EXPIRATION_HOURS` setting controls the actual lifetime. The agent does not extend the lifetime or silently generate a long-lived key. Expired sessions prompt the user to reconnect. Disconnect removes the agent’s saved copy; the gateway-issued session expires on its own.
 
 ## What it can do
 
@@ -41,7 +51,8 @@ Generated virtual keys are removed from model tool results and sent separately t
 - `app.py`: Slack Socket Mode and process lifecycle.
 - `auth.py`: Slack profile/email matching and live LiteLLM role checks.
 - `admin_api.py`: role-gated backend for the shared MCP server; selected routes only and no shared credentials.
-- `connections.py`: private connection page, CSRF protection, expiring links and encrypted personal credentials.
+- `connections.py`: private SSO connection pages, CSRF/browser protection, expiring links and encrypted sessions.
+- `sso.py`: LiteLLM device sign-in client and validated team selection.
 - `agent.py`: configuration, MCP connection and model instructions.
 - `engine.py`: shared Agents SDK runner and conversation isolation.
 - `core.py`: tool validation, secret handling and persistent action journal.
@@ -69,7 +80,7 @@ python app.py --web
 
 Browser verification also covers native form submission: `Referrer-Policy: same-origin` preserves the same-origin POST header required by CSRF protection. Browser-session, expired-link, and account-verification failures have separate messages; logs record only the failure category.
 
-Tests exercise the real Agents SDK loop, caller-credential propagation to both clients, two-user isolation, role revocation, disconnect during a run, uncertain mutation handling, HTTP A2A requests, CSRF/browser binding, expired/replayed links, and encrypted persistence.
+Tests cover SSO pending/expired sessions, team selection, malformed gateway responses, encrypted restart persistence, link replay and disconnect races. They also exercise the real Agents SDK loop, caller-credential propagation to both clients, two-user isolation, role revocation, disconnect during a run, uncertain mutation handling, HTTP A2A requests, CSRF/browser binding, expired/replayed links, and encrypted persistence.
 
 ## Render
 
@@ -84,7 +95,7 @@ The five prompted Blueprint values are:
 | --- | --- |
 | `SLACK_BOT_TOKEN` | Existing app’s bot token |
 | `SLACK_APP_TOKEN` | Existing app’s Socket Mode token |
-| `CREDENTIAL_ENCRYPTION_KEY` | Encrypts each admin’s saved personal key |
+| `CREDENTIAL_ENCRYPTION_KEY` | Encrypts each admin’s saved session and pending sign-in |
 | `ADMIN_TOOL_NAMES` | Exact allowlist of 62 `personal_admin-` tools |
 | `ADMIN_AGENT_SERVICE_TOKEN` | Authenticates gateway-to-agent requests |
 

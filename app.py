@@ -21,6 +21,7 @@ from core import Journal, all_tools, valid_dm_event
 from connections import ConnectionRequired, ConnectionStore, Connections
 from engine import AgentRunner
 from admin_api import add_admin_api_routes
+from sso import LiteLLMSSO
 
 
 def chunks(text: str, size: int = 3000):
@@ -92,7 +93,7 @@ def build_listener(settings: Settings, journal: Journal, model=None, connect=mcp
             try:
                 link = await connections.link(event["user"])
                 answer = (f"Connect your own LiteLLM admin account here: <{link}|Connect account>\n"
-                          "This private link expires in 10 minutes. Enter your key on the page, never in Slack. "
+                          "This private link expires in 10 minutes. Sign in with LiteLLM SSO and confirm the code on the gateway. "
                           "Then send your request again.")
                 if pending_ts:
                     await client.chat_update(channel=channel, ts=pending_ts, text="Your account connection changed. The run stopped; inspect gateway state before retrying changes.")
@@ -104,7 +105,7 @@ def build_listener(settings: Settings, journal: Journal, model=None, connect=mcp
                     text="I couldn’t verify your BerriAI Slack membership. Please try again later.")
         except (AccessDenied, AuthorizationUnavailable) as exc:
             status = "denied" if isinstance(exc, AccessDenied) else "authorization_unavailable"
-            answer = ("This app is available only to LiteLLM gateway admins. Your BerriAI Slack email must match your LiteLLM proxy-admin account. Send connect to reconnect your own key."
+            answer = ("Your LiteLLM admin session couldn’t be verified. Your BerriAI Slack email must match an active LiteLLM proxy-admin account. Send connect to sign in again with SSO."
                       if isinstance(exc, AccessDenied) else "I can’t verify your admin access right now. Please try again later.")
             if pending_ts:
                 answer += " The run stopped; check any requested changes in the gateway before retrying."
@@ -157,7 +158,8 @@ async def main():
     async with httpx2.AsyncClient() as auth_client:
         authorizer = AdminAuthorizer(settings.gateway_url, settings.workspace, auth_client)
         journal = Journal(settings.db_path)
-        connections = Connections(settings, ConnectionStore(journal.db, settings.encryption_key), authorizer, slack_app.client)
+        connections = Connections(settings, ConnectionStore(journal.db, settings.encryption_key), authorizer,
+                                  slack_app.client, LiteLLMSSO(settings.gateway_url, auth_client))
         runner = AgentRunner(settings, journal)
         slack_app.event("message")(build_listener(settings, journal, authorizer=authorizer,
                                                   connections=connections, runner=runner))

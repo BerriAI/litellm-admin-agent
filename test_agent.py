@@ -141,7 +141,7 @@ async def test_denied_event_never_connects_to_mcp_or_runs_model():
     slack = FakeSlack()
     await build_listener(settings(), Journal(":memory:"), ScriptedModel(), connect, authorizer=FakeAuthorizer(), connections=FakeConnections())(event(user="Uother"), slack)
     assert len(slack.posts) == 1
-    assert "only to LiteLLM gateway admins" in slack.posts[0]["text"]
+    assert "active LiteLLM proxy-admin account" in slack.posts[0]["text"]
 
 
 @pytest.mark.asyncio
