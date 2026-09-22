@@ -25,7 +25,7 @@ services:
       - key: SLACK_WORKSPACE_ID
         value: T04JBDEQSHF
       - key: SLACK_ENABLED
-        value: 'false'
+        value: 'true'
       - key: LITELLM_BASE_URL
         value: https://gateway.litellm-sandbox.ai/v1
       - key: LITELLM_MCP_URL
