@@ -1,0 +1,378 @@
+{
+  "proxy": "https://gateway.litellm-sandbox.ai",
+  "reported_version": "1.103.0",
+  "operations": [
+    {
+      "method": "POST",
+      "path": "/key/generate",
+      "operation_id": "generate_key_fn_key_generate_post",
+      "summary": "Generate Key Fn"
+    },
+    {
+      "method": "POST",
+      "path": "/key/service-account/generate",
+      "operation_id": "generate_service_account_key_fn_key_service_account_generate_post",
+      "summary": "Generate Service Account Key Fn"
+    },
+    {
+      "method": "POST",
+      "path": "/key/update",
+      "operation_id": "update_key_fn_key_update_post",
+      "summary": "Update Key Fn"
+    },
+    {
+      "method": "POST",
+      "path": "/key/bulk_update",
+      "operation_id": "bulk_update_keys_key_bulk_update_post",
+      "summary": "Bulk Update Keys"
+    },
+    {
+      "method": "POST",
+      "path": "/team/key/bulk_update",
+      "operation_id": "bulk_update_team_keys_team_key_bulk_update_post",
+      "summary": "Bulk Update Team Keys"
+    },
+    {
+      "method": "POST",
+      "path": "/key/delete",
+      "operation_id": "delete_key_fn_key_delete_post",
+      "summary": "Delete Key Fn"
+    },
+    {
+      "method": "GET",
+      "path": "/key/info",
+      "operation_id": "info_key_fn_key_info_get",
+      "summary": "Info Key Fn"
+    },
+    {
+      "method": "POST",
+      "path": "/key/regenerate",
+      "operation_id": "regenerate_key_fn_key_regenerate_post",
+      "summary": "Regenerate Key Fn"
+    },
+    {
+      "method": "POST",
+      "path": "/key/{key}/regenerate",
+      "operation_id": "regenerate_key_fn_key__key__regenerate_post",
+      "summary": "Regenerate Key Fn"
+    },
+    {
+      "method": "POST",
+      "path": "/key/{key}/reset_spend",
+      "operation_id": "reset_key_spend_fn_key__key__reset_spend_post",
+      "summary": "Reset Key Spend Fn"
+    },
+    {
+      "method": "GET",
+      "path": "/key/list",
+      "operation_id": "list_keys_key_list_get",
+      "summary": "List Keys"
+    },
+    {
+      "method": "GET",
+      "path": "/key/aliases",
+      "operation_id": "key_aliases_key_aliases_get",
+      "summary": "Key Aliases"
+    },
+    {
+      "method": "POST",
+      "path": "/key/block",
+      "operation_id": "block_key_key_block_post",
+      "summary": "Block Key"
+    },
+    {
+      "method": "POST",
+      "path": "/key/unblock",
+      "operation_id": "unblock_key_key_unblock_post",
+      "summary": "Unblock Key"
+    },
+    {
+      "method": "POST",
+      "path": "/key/health",
+      "operation_id": "key_health_key_health_post",
+      "summary": "Key Health"
+    },
+    {
+      "method": "GET",
+      "path": "/user/info",
+      "operation_id": "user_info_user_info_get",
+      "summary": "User Info"
+    },
+    {
+      "method": "GET",
+      "path": "/user/list",
+      "operation_id": "get_users_user_list_get",
+      "summary": "Get Users"
+    },
+    {
+      "method": "GET",
+      "path": "/user/daily/activity",
+      "operation_id": "get_user_daily_activity_user_daily_activity_get",
+      "summary": "Get User Daily Activity"
+    },
+    {
+      "method": "POST",
+      "path": "/team/new",
+      "operation_id": "new_team_team_new_post",
+      "summary": "New Team"
+    },
+    {
+      "method": "POST",
+      "path": "/team/update",
+      "operation_id": "update_team_team_update_post",
+      "summary": "Update Team"
+    },
+    {
+      "method": "PATCH",
+      "path": "/team/{team_id}",
+      "operation_id": "patch_team_team__team_id__patch",
+      "summary": "Patch Team"
+    },
+    {
+      "method": "POST",
+      "path": "/team/member_add",
+      "operation_id": "team_member_add_team_member_add_post",
+      "summary": "Team Member Add"
+    },
+    {
+      "method": "POST",
+      "path": "/team/member_delete",
+      "operation_id": "team_member_delete_team_member_delete_post",
+      "summary": "Team Member Delete"
+    },
+    {
+      "method": "POST",
+      "path": "/team/member_update",
+      "operation_id": "team_member_update_team_member_update_post",
+      "summary": "Team Member Update"
+    },
+    {
+      "method": "POST",
+      "path": "/team/{team_id}/member/{user_id}/reset_spend",
+      "operation_id": "reset_team_member_spend_fn_team__team_id__member__user_id__reset_spend_post",
+      "summary": "Reset Team Member Spend Fn"
+    },
+    {
+      "method": "POST",
+      "path": "/team/{team_id}/member/{user_id}/reset_budget",
+      "operation_id": "reset_team_member_budget_fn_team__team_id__member__user_id__reset_budget_post",
+      "summary": "Reset Team Member Budget Fn"
+    },
+    {
+      "method": "POST",
+      "path": "/team/bulk_member_add",
+      "operation_id": "bulk_team_member_add_team_bulk_member_add_post",
+      "summary": "Bulk Team Member Add"
+    },
+    {
+      "method": "POST",
+      "path": "/team/delete",
+      "operation_id": "delete_team_team_delete_post",
+      "summary": "Delete Team"
+    },
+    {
+      "method": "GET",
+      "path": "/team/info",
+      "operation_id": "team_info_team_info_get",
+      "summary": "Team Info"
+    },
+    {
+      "method": "GET",
+      "path": "/team/{team_id}/members/me",
+      "operation_id": "team_member_me_team__team_id__members_me_get",
+      "summary": "Team Member Me"
+    },
+    {
+      "method": "POST",
+      "path": "/team/block",
+      "operation_id": "block_team_team_block_post",
+      "summary": "Block Team"
+    },
+    {
+      "method": "POST",
+      "path": "/team/unblock",
+      "operation_id": "unblock_team_team_unblock_post",
+      "summary": "Unblock Team"
+    },
+    {
+      "method": "GET",
+      "path": "/team/metadata_schema",
+      "operation_id": "get_team_metadata_schema_team_metadata_schema_get",
+      "summary": "Get Team Metadata Schema"
+    },
+    {
+      "method": "GET",
+      "path": "/team/available",
+      "operation_id": "list_available_teams_team_available_get",
+      "summary": "List Available Teams"
+    },
+    {
+      "method": "GET",
+      "path": "/team/list",
+      "operation_id": "list_team_team_list_get",
+      "summary": "List Team"
+    },
+    {
+      "method": "POST",
+      "path": "/team/model/add",
+      "operation_id": "team_model_add_team_model_add_post",
+      "summary": "Team Model Add"
+    },
+    {
+      "method": "POST",
+      "path": "/team/model/delete",
+      "operation_id": "team_model_delete_team_model_delete_post",
+      "summary": "Team Model Delete"
+    },
+    {
+      "method": "GET",
+      "path": "/team/permissions_list",
+      "operation_id": "team_member_permissions_team_permissions_list_get",
+      "summary": "Team Member Permissions"
+    },
+    {
+      "method": "POST",
+      "path": "/team/permissions_update",
+      "operation_id": "update_team_member_permissions_team_permissions_update_post",
+      "summary": "Update Team Member Permissions"
+    },
+    {
+      "method": "POST",
+      "path": "/team/permissions_bulk_update",
+      "operation_id": "bulk_update_team_member_permissions_team_permissions_bulk_update_post",
+      "summary": "Bulk Update Team Member Permissions"
+    },
+    {
+      "method": "GET",
+      "path": "/team/daily/activity",
+      "operation_id": "get_team_daily_activity_team_daily_activity_get",
+      "summary": "Get Team Daily Activity"
+    },
+    {
+      "method": "GET",
+      "path": "/team/daily/activity/aggregated",
+      "operation_id": "get_team_daily_activity_aggregated_team_daily_activity_aggregated_get",
+      "summary": "Get Team Daily Activity Aggregated"
+    },
+    {
+      "method": "GET",
+      "path": "/team/spend/by_user",
+      "operation_id": "get_team_spend_by_user_team_spend_by_user_get",
+      "summary": "Get Team Spend By User"
+    },
+    {
+      "method": "GET",
+      "path": "/organization/daily/activity",
+      "operation_id": "get_organization_daily_activity_organization_daily_activity_get",
+      "summary": "Get Organization Daily Activity"
+    },
+    {
+      "method": "GET",
+      "path": "/organization/list",
+      "operation_id": "list_organization_organization_list_get",
+      "summary": "List Organization"
+    },
+    {
+      "method": "GET",
+      "path": "/organization/info",
+      "operation_id": "info_organization_organization_info_get",
+      "summary": "Info Organization"
+    },
+    {
+      "method": "POST",
+      "path": "/organization/info",
+      "operation_id": "deprecated_info_organization_organization_info_post",
+      "summary": "Deprecated Info Organization"
+    },
+    {
+      "method": "GET",
+      "path": "/global/spend/report",
+      "operation_id": "get_global_spend_report_global_spend_report_get",
+      "summary": "Get Global Spend Report"
+    },
+    {
+      "method": "GET",
+      "path": "/key/spend/report",
+      "operation_id": "get_key_spend_report_key_spend_report_get",
+      "summary": "Get Key Spend Report"
+    },
+    {
+      "method": "GET",
+      "path": "/team/spend/report",
+      "operation_id": "get_team_spend_report_team_spend_report_get",
+      "summary": "Get Team Spend Report"
+    },
+    {
+      "method": "GET",
+      "path": "/spend/logs/v2",
+      "operation_id": "ui_view_spend_logs_spend_logs_v2_get",
+      "summary": "Ui View Spend Logs"
+    },
+    {
+      "method": "GET",
+      "path": "/spend/logs",
+      "operation_id": "view_spend_logs_spend_logs_get",
+      "summary": "View Spend Logs"
+    },
+    {
+      "method": "POST",
+      "path": "/team/{team_id}/callback",
+      "operation_id": "add_team_callbacks_team__team_id__callback_post",
+      "summary": "Add Team Callbacks"
+    },
+    {
+      "method": "GET",
+      "path": "/team/{team_id}/callback",
+      "operation_id": "get_team_callbacks_team__team_id__callback_get",
+      "summary": "Get Team Callbacks"
+    },
+    {
+      "method": "DELETE",
+      "path": "/team/{team_id}/callback/{callback_name}",
+      "operation_id": "delete_team_callback_team__team_id__callback__callback_name__delete",
+      "summary": "Delete Team Callback"
+    },
+    {
+      "method": "POST",
+      "path": "/team/{team_id}/disable_logging",
+      "operation_id": "disable_team_logging_team__team_id__disable_logging_post",
+      "summary": "Disable Team Logging"
+    },
+    {
+      "method": "POST",
+      "path": "/budget/new",
+      "operation_id": "new_budget_budget_new_post",
+      "summary": "New Budget"
+    },
+    {
+      "method": "POST",
+      "path": "/budget/update",
+      "operation_id": "update_budget_budget_update_post",
+      "summary": "Update Budget"
+    },
+    {
+      "method": "POST",
+      "path": "/budget/info",
+      "operation_id": "info_budget_budget_info_post",
+      "summary": "Info Budget"
+    },
+    {
+      "method": "GET",
+      "path": "/budget/settings",
+      "operation_id": "budget_settings_budget_settings_get",
+      "summary": "Budget Settings"
+    },
+    {
+      "method": "GET",
+      "path": "/budget/list",
+      "operation_id": "list_budget_budget_list_get",
+      "summary": "List Budget"
+    },
+    {
+      "method": "POST",
+      "path": "/budget/delete",
+      "operation_id": "delete_budget_budget_delete_post",
+      "summary": "Delete Budget"
+    }
+  ]
+}

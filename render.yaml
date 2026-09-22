@@ -1,0 +1,44 @@
+services:
+  - type: web
+    name: litellm-admin-agent
+    runtime: python
+    plan: starter
+    region: oregon
+    numInstances: 1
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py --web
+    healthCheckPath: /healthz
+    autoDeployTrigger: off
+    disk:
+      name: admin-journal
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.13
+      - key: PYTHONUNBUFFERED
+        value: '1'
+      - key: OPENAI_AGENTS_DISABLE_TRACING
+        value: '1'
+      - key: STATE_DB
+        value: /var/data/events.sqlite3
+      - key: SLACK_WORKSPACE_ID
+        value: T04JBDEQSHF
+      - key: SLACK_ENABLED
+        value: 'false'
+      - key: LITELLM_BASE_URL
+        value: https://gateway.litellm-sandbox.ai/v1
+      - key: LITELLM_MCP_URL
+        value: https://gateway.litellm-sandbox.ai/litellm_admin/mcp
+      - key: LITELLM_MODEL
+        value: openai/gpt-5.4
+      - key: SLACK_BOT_TOKEN
+        sync: false
+      - key: SLACK_APP_TOKEN
+        sync: false
+      - key: LITELLM_ADMIN_KEY
+        sync: false
+      - key: ADMIN_TOOL_NAMES
+        sync: false
+      - key: ADMIN_AGENT_SERVICE_TOKEN
+        sync: false
