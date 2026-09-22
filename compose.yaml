@@ -1,0 +1,37 @@
+services:
+  admin-agent:
+    build: .
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 75s
+    ports:
+      - "127.0.0.1:10000:10000"
+    volumes:
+      - admin-state:/var/data
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    environment:
+      # Explicit list keeps local setup/admin credentials out of the container.
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
+      SLACK_APP_TOKEN: ${SLACK_APP_TOKEN:-}
+      SLACK_WORKSPACE_ID: ${SLACK_WORKSPACE_ID:-}
+      SLACK_ENABLED: ${SLACK_ENABLED:-true}
+      LITELLM_BASE_URL: ${LITELLM_BASE_URL:?Set your gateway URL}
+      LITELLM_MODEL: ${LITELLM_MODEL:?Set a gateway model name}
+      LITELLM_MCP_URL: ${LITELLM_MCP_URL:-}
+      LITELLM_MCP_ALIAS: personal_admin
+      ADMIN_TOOL_NAMES: ${ADMIN_TOOL_NAMES:-}
+      CONNECTION_AUTH_MODE: ${CONNECTION_AUTH_MODE:-api_key}
+      ADMIN_READ_ONLY: ${ADMIN_READ_ONLY:-true}
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:?Run setup_env.py}
+      ADMIN_AGENT_SERVICE_TOKEN: ${ADMIN_AGENT_SERVICE_TOKEN:?Run setup_env.py}
+      AGENT_PUBLIC_URL: ${AGENT_PUBLIC_URL:?Set your HTTPS agent URL}
+      STATE_DB: /var/data/events.sqlite3
+      MAX_PENDING_REQUESTS: ${MAX_PENDING_REQUESTS:-8}
+      QUEUE_TIMEOUT_SECONDS: ${QUEUE_TIMEOUT_SECONDS:-30}
+      RUN_TIMEOUT_SECONDS: ${RUN_TIMEOUT_SECONDS:-180}
+volumes:
+  admin-state:

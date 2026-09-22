@@ -8,3 +8,8 @@
 !web.py
 !admin-operations.json
 !connections.py
+!sso.py
+!connect.js
+!admin_api.py
+!doctor.py
+!configure_mcp.py

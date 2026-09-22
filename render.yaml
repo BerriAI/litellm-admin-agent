@@ -5,12 +5,12 @@ services:
     plan: starter
     region: oregon
     numInstances: 1
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install --require-hashes -r requirements.txt
     startCommand: python app.py --web
-    healthCheckPath: /healthz
+    healthCheckPath: /readyz
     autoDeployTrigger: off
     disk:
-      name: admin-journal
+      name: admin-state
       mountPath: /var/data
       sizeGB: 1
     envVars:
@@ -23,24 +23,26 @@ services:
       - key: STATE_DB
         value: /var/data/events.sqlite3
       - key: SLACK_WORKSPACE_ID
-        value: T04JBDEQSHF
+        sync: false
       - key: SLACK_ENABLED
         value: 'true'
       - key: LITELLM_BASE_URL
-        value: https://gateway.litellm-sandbox.ai/v1
-      - key: LITELLM_MCP_URL
-        value: https://gateway.litellm-sandbox.ai/personal_admin/mcp
+        sync: false
       - key: LITELLM_MODEL
-        value: openai/gpt-5.4
+        sync: false
       - key: SLACK_BOT_TOKEN
         sync: false
       - key: SLACK_APP_TOKEN
         sync: false
       - key: LITELLM_MCP_ALIAS
         value: personal_admin
+      - key: CONNECTION_AUTH_MODE
+        value: api_key
+      - key: ADMIN_READ_ONLY
+        value: 'true'
       - key: CREDENTIAL_ENCRYPTION_KEY
         sync: false
       - key: ADMIN_TOOL_NAMES
         sync: false
       - key: ADMIN_AGENT_SERVICE_TOKEN
-        sync: false
+        generateValue: true

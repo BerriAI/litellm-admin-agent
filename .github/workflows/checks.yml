@@ -10,7 +10,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install -r requirements-dev.txt
+          cache: pip
+      - run: pip install --require-hashes -r requirements-dev.txt
       - run: python -m pytest -q
         env:
           OPENAI_AGENTS_DISABLE_TRACING: '1'
+      - run: docker build -t litellm-admin-agent:smoke .
+      - run: python scripts/smoke_container.py

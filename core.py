@@ -57,6 +57,8 @@ class Journal:
             parent = Path(path).parent
             parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path)
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("PRAGMA busy_timeout=5000")
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS events (
                 id TEXT PRIMARY KEY, actor TEXT NOT NULL, status TEXT NOT NULL,
@@ -159,11 +161,15 @@ class ToolBridge:
         self, tools: list[types.Tool], allowed: frozenset[str],
         invoke: Callable[..., Awaitable[Any]], journal: Journal, event_id: str,
         ensure_authorized: Callable[[], Awaitable[None]] | None = None,
+        read_only: bool = False,
     ):
         available = {t.name: t for t in tools}
         if not allowed or allowed - available.keys():
             raise ValueError("Select exact, available MCP tool names before starting the agent")
         self.tools = {name: available[name] for name in allowed}
+        self.read_only = read_only
+        if read_only:
+            self.tools = {name: tool for name, tool in self.tools.items() if is_read_only(name)}
         self.invoke = invoke
         self.journal = journal
         self.event_id = event_id
@@ -211,6 +217,10 @@ class ToolBridge:
                 data = response.model_dump(mode="json", by_alias=True)
                 cleaned = self.secrets.clean(data)
                 encoded = json.dumps(cleaned)
+                if not read_only and data.get("isError"):
+                    # MCP can return a timeout/HTTP 5xx as a normal error result.
+                    # A mutation may have committed before that error was produced.
+                    raise ToolOutcomeUnknown("The gateway did not confirm the write; inspect state before retrying")
                 if len(encoded) > 80000:
                     encoded = json.dumps({"notice": "Result exceeds the response limit. Use pagination or a narrower query.", "partial_result": encoded[:80000]})
                 self.completed[fingerprint] = encoded

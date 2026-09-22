@@ -22,6 +22,10 @@ class Outcome:
     status: str
 
 
+class AgentBusy(Exception):
+    """No operation started; bounded admission rejected this request."""
+
+
 class AgentRunner:
     def __init__(self, settings: Settings, journal: Journal, model=None, connect=mcp_session, make_model=model_session):
         self.settings = settings
@@ -31,6 +35,9 @@ class AgentRunner:
         self.make_model = make_model
         self.lock = asyncio.Lock()
         self.conversations: dict[tuple[str, str], list[dict]] = {}
+        self.pending = 0
+        self.accepting = True
+        self.tasks: set[asyncio.Task] = set()
 
     @asynccontextmanager
     async def _model(self, credential):
@@ -42,20 +49,49 @@ class AgentRunner:
 
     async def execute(self, text: str, principal: Principal, context: str, event_id: str,
                       verify: Callable[[], Awaitable[None]], credential: str) -> Outcome:
+        if not self.accepting or self.pending >= self.settings.max_pending_requests:
+            raise AgentBusy()
+        task = asyncio.current_task()
+        self.tasks.add(task)
+        self.pending += 1
+        try:
+            try:
+                await asyncio.wait_for(self.lock.acquire(), timeout=self.settings.queue_timeout_seconds)
+            except TimeoutError:
+                raise AgentBusy() from None
+            try:
+                return await self._execute(text, principal, context, event_id, verify, credential)
+            finally:
+                self.lock.release()
+        finally:
+            self.pending -= 1
+            self.tasks.discard(task)
+
+    async def close(self, grace_seconds=20):
+        self.accepting = False
+        if self.tasks:
+            _, pending = await asyncio.wait(self.tasks, timeout=grace_seconds)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    async def _execute(self, text, principal, context, event_id, verify, credential) -> Outcome:
         identity = (principal.actor, context)
         bridge = None
-        async with self.lock:
-            history = self.conversations.get(identity, [])
-            stage = "authorization"
-            try:
+        stage = "authorization"
+        try:
+            async with asyncio.timeout(self.settings.run_timeout_seconds):
+                history = self.conversations.get(identity, [])
                 await verify()
                 stage = "tool_connection"
                 async with self.connect(self.settings, credential) as session, self._model(credential) as model:
                     stage = "tool_discovery"
                     bridge = ToolBridge(await all_tools(session), self.settings.tool_names, session.call_tool,
-                                        self.journal, event_id, ensure_authorized=verify)
+                                        self.journal, event_id, ensure_authorized=verify, read_only=self.settings.read_only)
                     stage = "agent_run"
                     agent = agent_for(bridge, model)
+                    if self.settings.read_only:
+                        agent.instructions += "\nThis deployment is read-only. Explain that changes require the operator to enable writes."
                     agent.instructions += "\nAuthenticated requesting LiteLLM user: " + principal.user_id
                     result = await Runner.run(
                         agent, input=history + [{"role": "user", "content": text}], max_turns=16,
@@ -70,16 +106,16 @@ class AgentRunner:
                     if len(self.conversations) > 100:
                         self.conversations.pop(next(iter(self.conversations)))
                     return Outcome(answer, dict(bridge.secrets.keys), "completed")
-            except Exception as exc:
-                logging.warning("Agent run %s failed stage=%s errors=%s", event_id, stage, error_types(exc))
-                if bridge and bridge.mutation_attempted:
-                    answer = "I couldn’t finish this request. Some actions may already have completed; check the affected key or team before retrying a change."
-                elif stage in ("tool_connection", "tool_discovery"):
-                    answer = "I couldn’t connect to the gateway’s admin tools. No requested operation was run. Please try again; if this continues, ask the app administrator to check the tool connection."
-                else:
-                    answer = "I couldn’t complete this request. No requested changes were made. Please try again; if this continues, ask the app administrator to check the service logs."
-                # Keys already created are still delivered privately to the verified caller.
-                return Outcome(answer, dict(bridge.secrets.keys) if bridge else {}, "failed")
+        except Exception as exc:
+            logging.warning("Agent run %s failed stage=%s errors=%s", event_id, stage, error_types(exc))
+            if bridge and bridge.mutation_attempted:
+                answer = "I couldn’t finish this request. Some actions may already have completed; check the affected key or team before retrying a change."
+            elif stage in ("tool_connection", "tool_discovery"):
+                answer = "I couldn’t connect to the gateway’s admin tools. No requested operation was run. Please try again; if this continues, ask the app administrator to check the tool connection."
+            else:
+                answer = "I couldn’t complete this request. No requested changes were made. Please try again; if this continues, ask the app administrator to check the service logs."
+            # Keys already created are still delivered privately to the verified caller.
+            return Outcome(answer, dict(bridge.secrets.keys) if bridge else {}, "failed")
 
 
 def error_types(exc: BaseException) -> str:

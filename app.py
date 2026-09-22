@@ -19,7 +19,7 @@ from agent import Settings, mcp_session
 from auth import AccessDenied, AdminAuthorizer, AuthorizationUnavailable
 from core import Journal, all_tools, valid_dm_event
 from connections import ConnectionRequired, ConnectionStore, Connections
-from engine import AgentRunner
+from engine import AgentBusy, AgentRunner
 from admin_api import add_admin_api_routes
 from sso import LiteLLMSSO
 
@@ -33,7 +33,7 @@ def build_listener(settings: Settings, journal: Journal, model=None, connect=mcp
                    *, authorizer, connections, runner=None):
     runner = runner or AgentRunner(settings, journal, model, connect)
 
-    async def handle(body, client):
+    async def process(body, client):
         if not valid_dm_event(body, settings.workspace):
             return
         event = body["event"]
@@ -93,7 +93,7 @@ def build_listener(settings: Settings, journal: Journal, model=None, connect=mcp
             try:
                 link = await connections.link(event["user"])
                 answer = (f"Connect your own LiteLLM admin account here: <{link}|Connect account>\n"
-                          "This private link expires in 10 minutes. Sign in with LiteLLM SSO and approve the connection. "
+                          "This private link expires in 10 minutes. Complete the secure connection page. Never paste keys into Slack. "
                           "Then send your request again.")
                 if pending_ts:
                     await client.chat_update(channel=channel, ts=pending_ts, text="Your account connection changed. The run stopped; inspect gateway state before retrying changes.")
@@ -102,10 +102,17 @@ def build_listener(settings: Settings, journal: Journal, model=None, connect=mcp
                                                   unfurl_links=False, unfurl_media=False)
             except (AccessDenied, AuthorizationUnavailable):
                 await client.chat_postMessage(channel=channel, thread_ts=thread,
-                    text="I couldn’t verify your BerriAI Slack membership. Please try again later.")
+                    text="I couldn’t verify your Slack workspace membership. Please try again later.")
+        except AgentBusy:
+            status = "busy"
+            answer = "The agent is busy. No operation started for this request. Please send it again shortly."
+            if pending_ts:
+                await client.chat_update(channel=channel, ts=pending_ts, text=answer)
+            else:
+                await client.chat_postMessage(channel=channel, thread_ts=thread, text=answer)
         except (AccessDenied, AuthorizationUnavailable) as exc:
             status = "denied" if isinstance(exc, AccessDenied) else "authorization_unavailable"
-            answer = ("Your LiteLLM admin session couldn’t be verified. Your BerriAI Slack email must match an active LiteLLM proxy-admin account. Send connect to sign in again with SSO."
+            answer = ("Your LiteLLM admin session couldn’t be verified. Your Slack email must match an active LiteLLM proxy-admin account. Send connect to reconnect."
                       if isinstance(exc, AccessDenied) else "I can’t verify your admin access right now. Please try again later.")
             if pending_ts:
                 answer += " The run stopped; check any requested changes in the gateway before retrying."
@@ -121,6 +128,16 @@ def build_listener(settings: Settings, journal: Journal, model=None, connect=mcp
             status = "reply_failed"
         finally:
             journal.finish(event_id, status)
+
+    tasks = set()
+    async def handle(body, client):
+        task = asyncio.current_task()
+        tasks.add(task)
+        try:
+            await process(body, client)
+        finally:
+            tasks.discard(task)
+    handle.tasks = tasks
     return handle
 
 
@@ -135,9 +152,11 @@ async def main():
     set_tracing_disabled(True)
     settings = Settings.read()
     settings.validate()
-    slack_enabled = os.getenv("SLACK_ENABLED", "true").lower() in ("true", "1")
+    slack_enabled = settings.slack_enabled
     if not slack_enabled and not args.web and not args.check and not args.list_tools:
         raise ValueError("Enable Slack or use --web")
+    if slack_enabled and not args.web and not args.check and not args.list_tools:
+        raise ValueError("Slack account connections require the web server; start with python app.py --web")
     if args.list_tools:
         # Setup-only credential; the running service never reads this variable.
         credential = os.environ["LITELLM_SETUP_KEY"]
@@ -145,36 +164,39 @@ async def main():
             available = await all_tools(session)
         print(json.dumps([{"name": t.name, "description": t.description} for t in available], indent=2))
         return
-    slack_app = AsyncApp(token=settings.bot_token)
-    identity = await slack_app.client.auth_test()
-    if identity.get("team_id") != settings.workspace:
-        raise ValueError("Slack bot token belongs to a different workspace")
-    # Fail startup clearly if the installed token is missing the new role-lookup scopes.
-    if slack_enabled or args.check:
+    slack_app = AsyncApp(token=settings.bot_token) if slack_enabled else None
+    if slack_app:
+        identity = await slack_app.client.auth_test()
+        if identity.get("team_id") != settings.workspace:
+            raise ValueError("Slack bot token belongs to a different workspace")
         await slack_app.client.users_info(user=identity["user_id"])
     if args.check:
-        print(f"Slack identity and user lookup verified; {len(settings.tool_names)} tools configured. No messages or administrative changes sent.")
+        print(f"Configuration verified; Slack enabled={slack_enabled}; {len(settings.tool_names)} tools configured. Run doctor.py for gateway compatibility checks.")
         return
     async with httpx2.AsyncClient() as auth_client:
         authorizer = AdminAuthorizer(settings.gateway_url, settings.workspace, auth_client)
         journal = Journal(settings.db_path)
         connections = Connections(settings, ConnectionStore(journal.db, settings.encryption_key), authorizer,
-                                  slack_app.client, LiteLLMSSO(settings.gateway_url, settings.public_url, auth_client))
+                                  slack_app.client, LiteLLMSSO(settings.gateway_url, settings.public_url, auth_client)) if slack_app else None
         runner = AgentRunner(settings, journal)
-        slack_app.event("message")(build_listener(settings, journal, authorizer=authorizer,
-                                                  connections=connections, runner=runner))
-        socket = AsyncSocketModeHandler(slack_app, settings.app_token)
+        listener = build_listener(settings, journal, authorizer=authorizer, connections=connections, runner=runner)
+        socket = None
+        if slack_app:
+            slack_app.event("message")(listener)
+            socket = AsyncSocketModeHandler(slack_app, settings.app_token)
         server = None
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, stop.set)
+        async def ready():
+            return runner.accepting and not stop.is_set() and (socket is None or await socket.client.is_connected())
         try:
             if args.web:
                 from web import create_web_app
-                web_app = create_web_app(settings, authorizer, runner, journal, connections)
-                add_admin_api_routes(web_app, settings.gateway_url, authorizer, auth_client)
-                server = web.AppRunner(web_app, access_log=None)
+                web_app = create_web_app(settings, authorizer, runner, journal, connections, ready=ready)
+                add_admin_api_routes(web_app, settings.gateway_url, authorizer, auth_client, read_only=settings.read_only)
+                server = web.AppRunner(web_app, access_log=None, shutdown_timeout=20)
                 await server.setup()
                 await web.TCPSite(server, "0.0.0.0", int(os.getenv("PORT", "10000"))).start()
             if slack_enabled:
@@ -182,7 +204,15 @@ async def main():
             print(f"LiteLLM Admin ready; Slack enabled={slack_enabled}; proxy_admin access required.", flush=True)
             await stop.wait()
         finally:
-            await socket.close_async()
+            runner.accepting = False
+            if socket:
+                await socket.close_async()
+            if listener.tasks:
+                _, pending = await asyncio.wait(listener.tasks, timeout=20)
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+            await runner.close()
             if server:
                 await server.cleanup()
             journal.db.close()

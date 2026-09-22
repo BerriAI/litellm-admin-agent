@@ -11,7 +11,7 @@ from aiohttp import web
 from auth import AccessDenied, AuthorizationUnavailable
 
 
-def add_admin_api_routes(app: web.Application, gateway_url: str, authorizer, client) -> None:
+def add_admin_api_routes(app: web.Application, gateway_url: str, authorizer, client, *, read_only=False) -> None:
     operations = json.loads((Path(__file__).parent / "admin-operations.json").read_text())["operations"]
     routes = {"admin_api_" + operation["operation_id"]: operation for operation in operations}
 
@@ -26,6 +26,8 @@ def add_admin_api_routes(app: web.Application, gateway_url: str, authorizer, cli
         operation = routes[request.match_info.route.name]
         try:
             principal = await authorizer.require_gateway_admin(credential)
+            if read_only and operation["method"] != "GET":
+                return error("This deployment is read-only. Ask the operator to enable writes.", 403)
             path = operation["path"]
             for name, value in request.match_info.items():
                 if value in ("", ".", "..") or any(c in value for c in ("/", "\\", "\r", "\n", "\x00")):

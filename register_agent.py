@@ -8,7 +8,7 @@ import os
 import httpx2
 from dotenv import load_dotenv
 
-from agent import Settings
+from agent import Settings, trusted_url
 from web import agent_card
 
 
@@ -35,6 +35,7 @@ async def main():
     args = parser.parse_args()
     load_dotenv()
     settings = Settings.read()
+    trusted_url(settings.gateway_url, "LITELLM_BASE_URL", origin_only=True)
     payload = registration(settings)
     if not args.apply:
         preview = copy.deepcopy(payload)
@@ -49,10 +50,15 @@ async def main():
         listed = await client.get(settings.gateway_url + "/v1/agents", headers=headers)
         listed.raise_for_status()
         data = listed.json()
-        agents = data if isinstance(data, list) else data.get("agents", [])
+        agents = data if isinstance(data, list) else data.get("agents") if isinstance(data, dict) else None
+        if not isinstance(agents, list) or any(not isinstance(a, dict) for a in agents):
+            raise SystemExit("Unexpected agent list response; no registration was changed.")
         if any(a.get("agent_name") == payload["agent_name"] for a in agents):
             raise SystemExit("litellm-admin already exists. Inspect it before updating; no duplicate was created.")
-        result = await client.post(settings.gateway_url + "/v1/agents", headers=headers, json=payload)
+        try:
+            result = await client.post(settings.gateway_url + "/v1/agents", headers=headers, json=payload)
+        except (httpx2.TimeoutException, httpx2.NetworkError):
+            raise SystemExit("Registration outcome is uncertain. Inspect gateway Agents before retrying.") from None
         # Upstream response can echo secrets. Report only status and the resulting ID.
         if result.status_code >= 400:
             raise SystemExit(f"Registration returned HTTP {result.status_code}; response withheld to protect credentials.")

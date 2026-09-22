@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 import json
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 
 from urllib.parse import urlparse
 
@@ -17,6 +18,26 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 from core import ToolBridge
+from cryptography.fernet import Fernet
+
+
+def env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name, str(default)).strip().lower()
+    if value not in {"true", "false", "1", "0"}:
+        raise ValueError(f"{name} must be true or false")
+    return value in {"true", "1"}
+
+
+def trusted_url(value: str, name: str, *, origin_only=False) -> None:
+    parsed = urlparse(value)
+    if (parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password
+            or parsed.query or parsed.fragment or any(c.isspace() for c in value)
+            or (origin_only and parsed.path not in ("", "/"))):
+        raise ValueError(f"{name} must be an HTTPS {'origin' if origin_only else 'URL'} without credentials, query parameters or fragments")
+    try:
+        parsed.port
+    except ValueError:
+        raise ValueError(f"{name} has an invalid port") from None
 
 
 INSTRUCTIONS = """You administer one LiteLLM deployment for an authenticated administrator in a private Slack DM or gateway agent conversation.
@@ -65,6 +86,12 @@ class Settings:
     encryption_key: str = field(default="", repr=False)
     service_token: str = field(default="", repr=False)
     public_url: str = ""
+    slack_enabled: bool = True
+    connection_auth_mode: str = "sso"
+    read_only: bool = True
+    max_pending_requests: int = 8
+    queue_timeout_seconds: float = 30
+    run_timeout_seconds: float = 180
 
     @property
     def gateway_url(self) -> str:
@@ -72,35 +99,61 @@ class Settings:
 
     @classmethod
     def read(cls) -> "Settings":
+        model_url = os.getenv("LITELLM_BASE_URL", "").rstrip("/")
+        gateway_url = model_url.removesuffix("/v1")
+        alias = os.getenv("LITELLM_MCP_ALIAS", "personal_admin")
+        inventory = json.loads(Path(__file__).with_name("admin-operations.json").read_text())["operations"]
+        configured = os.getenv("ADMIN_TOOL_NAMES", "")
+        tool_names = (frozenset(x.strip() for x in configured.split(",") if x.strip()) if configured.strip()
+                      else frozenset(alias + "-" + item["operation_id"] for item in inventory))
         return cls(
             workspace=os.getenv("SLACK_WORKSPACE_ID", ""),
-            mcp_url=os.getenv("LITELLM_MCP_URL", ""),
-            mcp_alias=os.getenv("LITELLM_MCP_ALIAS", "personal_admin"),
-            tool_names=frozenset(x.strip() for x in os.getenv("ADMIN_TOOL_NAMES", "").split(",") if x.strip()),
-            model_url=os.getenv("LITELLM_BASE_URL", ""), model=os.getenv("LITELLM_MODEL", ""),
+            mcp_url=os.getenv("LITELLM_MCP_URL") or gateway_url + "/" + alias + "/mcp",
+            mcp_alias=alias, tool_names=tool_names,
+            model_url=model_url, model=os.getenv("LITELLM_MODEL", ""),
             bot_token=os.getenv("SLACK_BOT_TOKEN", ""), app_token=os.getenv("SLACK_APP_TOKEN", ""),
             db_path=os.getenv("STATE_DB", "data/events.sqlite3"),
             encryption_key=os.getenv("CREDENTIAL_ENCRYPTION_KEY", ""),
             service_token=os.getenv("ADMIN_AGENT_SERVICE_TOKEN", ""),
             public_url=(os.getenv("AGENT_PUBLIC_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").rstrip("/"),
+            slack_enabled=env_bool("SLACK_ENABLED", True),
+            connection_auth_mode=os.getenv("CONNECTION_AUTH_MODE", "sso"),
+            read_only=env_bool("ADMIN_READ_ONLY", True),
+            max_pending_requests=int(os.getenv("MAX_PENDING_REQUESTS", "8")),
+            queue_timeout_seconds=float(os.getenv("QUEUE_TIMEOUT_SECONDS", "30")),
+            run_timeout_seconds=float(os.getenv("RUN_TIMEOUT_SECONDS", "180")),
         )
 
     def validate(self) -> None:
-        required = {"SLACK_WORKSPACE_ID": self.workspace, "LITELLM_MCP_URL": self.mcp_url,
+        required = {"LITELLM_MCP_URL": self.mcp_url,
                     "ADMIN_TOOL_NAMES": self.tool_names, "LITELLM_BASE_URL": self.model_url,
-                    "LITELLM_MODEL": self.model, "SLACK_BOT_TOKEN": self.bot_token,
-                    "SLACK_APP_TOKEN": self.app_token, "CREDENTIAL_ENCRYPTION_KEY": self.encryption_key,
+                    "LITELLM_MODEL": self.model, "CREDENTIAL_ENCRYPTION_KEY": self.encryption_key,
                     "AGENT_PUBLIC_URL or RENDER_EXTERNAL_URL": self.public_url}
+        if self.slack_enabled:
+            required.update(SLACK_WORKSPACE_ID=self.workspace, SLACK_BOT_TOKEN=self.bot_token,
+                            SLACK_APP_TOKEN=self.app_token)
         missing = [name for name, value in required.items() if not value]
         if missing:
             raise ValueError("Missing configuration: " + ", ".join(missing))
-        for url in (self.model_url, self.mcp_url, self.public_url):
-            parsed = urlparse(url)
-            if (parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password
-                    or parsed.query or parsed.fragment):
-                raise ValueError("Service URLs must be HTTPS without credentials or query parameters")
+        trusted_url(self.model_url, "LITELLM_BASE_URL")
+        trusted_url(self.mcp_url, "LITELLM_MCP_URL")
+        trusted_url(self.gateway_url, "Gateway URL", origin_only=True)
+        trusted_url(self.public_url, "AGENT_PUBLIC_URL", origin_only=True)
         if self.mcp_alias != "personal_admin" or self.mcp_url != self.gateway_url + "/" + self.mcp_alias + "/mcp":
             raise ValueError("Use the dedicated per-user MCP registration on the trusted gateway")
+        if self.connection_auth_mode not in {"sso", "api_key"}:
+            raise ValueError("CONNECTION_AUTH_MODE must be sso or api_key")
+        try:
+            Fernet(self.encryption_key.encode())
+        except (ValueError, TypeError):
+            raise ValueError("CREDENTIAL_ENCRYPTION_KEY must be a Fernet key; run python setup_env.py") from None
+        if len(self.service_token) < 32 or any(c.isspace() for c in self.service_token):
+            raise ValueError("ADMIN_AGENT_SERVICE_TOKEN must have at least 32 characters and no whitespace")
+        if self.db_path == ":memory:" or not self.db_path:
+            raise ValueError("STATE_DB must name a persistent database file")
+        if (not 1 <= self.max_pending_requests <= 100 or not 1 <= self.queue_timeout_seconds <= 300
+                or not 1 <= self.run_timeout_seconds <= 900):
+            raise ValueError("Request limits must be finite: pending 1–100, queue 1–300 seconds, run 1–900 seconds")
 
 
 @asynccontextmanager
