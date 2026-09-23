@@ -48,6 +48,33 @@ This release preserves the existing credential tables but changes deployment tem
 - The image now includes all connection/SSO/backend assets. Compose injects only runtime configuration.
 - Do not sync the generic Render blueprint over an existing service without reviewing its environment changes. Keep its current URLs, tokens, encryption key and state disk.
 
+### Enable new admin tools
+
+Saved MCP registrations and `ADMIN_TOOL_NAMES` do not automatically expand when
+the agent is upgraded. To enable model creation on an existing installation:
+
+1. Deploy the updated agent code so its `/admin-api` backend serves the new routes.
+2. With your existing gateway and agent URLs in the local setup environment, run:
+
+   ```sh
+   python configure_mcp.py --write-tool-names
+   ```
+
+3. Review the printed `allowed_tools`. The model operations are
+   `add_new_model_model_new_post`, `model_info_v2_v2_model_info_get`, and
+   `model_info_v1_v1_model_info_get`; unavailable routes are omitted.
+4. Edit the existing `personal_admin` MCP registration in your gateway and update
+   its allowed tools from that preview. Keep the backend URL, authentication,
+   access settings and empty stored credentials unchanged. Do not create a second
+   registration or point it directly at the gateway API. `--apply` intentionally
+   refuses to overwrite an existing registration.
+5. Copy the updated `ADMIN_TOOL_NAMES` into the service environment and restart
+   it. For Docker, use `docker compose up -d --build --force-recreate`. If you
+   deliberately restrict tools, retain those restrictions in both allowlists.
+6. Run `python doctor.py` with your personal setup credential and check a model
+   lookup. Model writes also require `ADMIN_READ_ONLY=false` and the gateway
+   [model creation prerequisites](compatibility.md#model-creation).
+
 ## Troubleshooting
 
 | Symptom | Check |

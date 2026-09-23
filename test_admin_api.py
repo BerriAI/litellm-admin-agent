@@ -73,10 +73,11 @@ async def test_verified_admin_can_read_with_own_key_without_key_or_team_permissi
 
 @pytest.mark.parametrize("request_headers,status", [({}, 401), (headers("ordinary-user"), 403),
     ({**headers("ordinary-user"), "X-LiteLLM-User-Role": "proxy_admin", "X-LiteLLM-User-Id": KEY}, 403)])
+@pytest.mark.parametrize("path", ["/key/generate", "/model/new"])
 @pytest.mark.asyncio
-async def test_non_admin_cannot_invoke_tools_even_with_spoofed_metadata(service, request_headers, status):
+async def test_non_admin_cannot_invoke_tools_even_with_spoofed_metadata(service, request_headers, status, path):
     client, gateway = service
-    result = await client.post("/admin-api/key/generate", headers=request_headers, json={"user_role": "proxy_admin"})
+    result = await client.post("/admin-api" + path, headers=request_headers, json={"user_role": "proxy_admin"})
     assert result.status == status
     assert not gateway.forwarded
 
@@ -95,11 +96,12 @@ async def test_admin_mutation_forwards_body_and_uses_real_audit_actor(service):
 
 
 @pytest.mark.parametrize("status", [401, 403, 429, 500])
+@pytest.mark.parametrize("path", ["/key/generate", "/model/new"])
 @pytest.mark.asyncio
-async def test_native_api_restrictions_remain_enforced_and_are_not_retried(service, status):
+async def test_native_api_restrictions_remain_enforced_and_are_not_retried(service, status, path):
     client, gateway = service
     gateway.status = status
-    response = await client.post("/admin-api/key/generate", headers=headers(), json={"key_alias": "test"})
+    response = await client.post("/admin-api" + path, headers=headers(), json={})
     assert response.status == status
     assert len(gateway.forwarded) == 1
 
@@ -114,11 +116,12 @@ async def test_role_revocation_during_operation_suppresses_private_result(servic
     assert len(gateway.forwarded) == 1
 
 
+@pytest.mark.parametrize("path", ["/key/generate", "/model/new"])
 @pytest.mark.asyncio
-async def test_uncertain_mutation_is_never_retried(service):
+async def test_uncertain_mutation_is_never_retried(service, path):
     client, gateway = service
     gateway.fail = True
-    response = await client.post("/admin-api/key/generate", headers=headers(), json={})
+    response = await client.post("/admin-api" + path, headers=headers(), json={})
     assert response.status == 504
     assert "Do not repeat a change" in await response.text()
     assert len(gateway.forwarded) == 1

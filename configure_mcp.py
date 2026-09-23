@@ -28,7 +28,7 @@ def registration(spec: dict, base_url: str, agent_url: str) -> dict:
     return {
         "server_name": "personal_admin",
         "alias": "personal_admin",
-        "description": "Keys, teams, budgets, and reporting for the private Slack admin agent",
+        "description": "Models, keys, teams, budgets, and reporting for the private Slack admin agent",
         "url": agent_url.rstrip("/") + "/admin-api",
         "spec_path": base_url + "/openapi.json",
         "transport": "http",

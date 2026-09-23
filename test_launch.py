@@ -87,9 +87,12 @@ async def test_runtime_default_allows_admin_actions_and_read_only_is_opt_in(monk
     assert bool(outcome.secrets) == bool(expected_writes)
 
 
+@pytest.mark.parametrize("names,write_path,read_path", [
+    (("personal_admin-list_keys_key_list_get", "personal_admin-generate_key_fn_key_generate_post"), "/key/generate", "/team/list"),
+    (("personal_admin-model_info_v2_v2_model_info_get", "personal_admin-add_new_model_model_new_post"), "/model/new", "/v2/model/info"),
+])
 @pytest.mark.asyncio
-async def test_read_only_blocks_model_write_calls_and_direct_backend_bypass():
-    names = ("personal_admin-list_keys_key_list_get", "personal_admin-generate_key_fn_key_generate_post")
+async def test_read_only_blocks_model_write_calls_and_direct_backend_bypass(names, write_path, read_path):
     calls = []
     async def invoke(**kwargs):
         calls.append(kwargs); return response({"keys": []})
@@ -105,9 +108,9 @@ async def test_read_only_blocks_model_write_calls_and_direct_backend_bypass():
         app = web.Application()
         add_admin_api_routes(app, "https://gateway.example.com", AdminAuthorizer("https://gateway.example.com", "T", upstream), upstream, read_only=True)
         async with TestClient(TestServer(app)) as client:
-            assert (await client.post("/admin-api/key/generate", headers=api_headers(), json={})).status == 403
+            assert (await client.post("/admin-api" + write_path, headers=api_headers(), json={})).status == 403
             assert not gateway.forwarded
-            assert (await client.get("/admin-api/team/list", headers=api_headers())).status == 200
+            assert (await client.get("/admin-api" + read_path, headers=api_headers())).status == 200
 
 
 @pytest.mark.asyncio

@@ -109,11 +109,26 @@ class SecretBoundary:
     """Keep returned virtual keys out of model context; deliver directly to the requester."""
     keys: dict[str, str] = field(default_factory=dict)
 
+    def model_params(self, value: Any) -> dict:
+        # Model creation can return serialized DB parameters, including provider
+        # secrets. Keep only identifiers needed to inspect/verify a deployment.
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                return {}
+        if not isinstance(value, dict):
+            return {}
+        return {name: self.clean(value[name]) for name in ("model", "litellm_credential_name")
+                if isinstance(value.get(name), str)}
+
     def clean(self, value: Any) -> Any:
         if isinstance(value, dict):
             cleaned = {}
             for k, v in value.items():
-                if k.lower() in {"token", "api_key"} and isinstance(v, str) and re.fullmatch(r"[0-9a-f]{64}", v):
+                if k.lower() == "litellm_params":
+                    cleaned[k] = self.model_params(v)
+                elif k.lower() in {"token", "api_key"} and isinstance(v, str) and re.fullmatch(r"[0-9a-f]{64}", v):
                     # Hashed virtual-key identifiers are needed for management/reporting.
                     cleaned["key_hash"] = v
                 else:
