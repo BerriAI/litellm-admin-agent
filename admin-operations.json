@@ -3,6 +3,24 @@
   "operations": [
     {
       "method": "POST",
+      "path": "/model/new",
+      "operation_id": "add_new_model_model_new_post",
+      "summary": "Add a model deployment"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/model/info",
+      "operation_id": "model_info_v2_v2_model_info_get",
+      "summary": "List and search model deployments"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/model/info",
+      "operation_id": "model_info_v1_v1_model_info_get",
+      "summary": "View model deployments"
+    },
+    {
+      "method": "POST",
       "path": "/key/generate",
       "operation_id": "generate_key_fn_key_generate_post",
       "summary": "Generate Key Fn"

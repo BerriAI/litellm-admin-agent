@@ -16,6 +16,22 @@ The gateway must support:
 
 Personal-key mode (`CONNECTION_AUTH_MODE=api_key`) does not require gateway OAuth. Each key must belong to an active proxy-admin user, have model access, and match the Slack user’s verified email. Stored connections expire after 24 hours; the gateway’s own key expiry and revocation can shorten that. Connecting does not broaden a key’s gateway permissions.
 
+## Model creation
+
+Model creation uses `POST /model/new`. Deployment lookup uses `GET /v2/model/info`
+when available, with `GET /v1/model/info` as a fallback. Setup includes only the
+routes present in the gateway's OpenAPI spec.
+
+- Connect a database and enable `STORE_MODEL_IN_DB=True` on the gateway.
+- Configure provider authentication on the gateway, or use a stored credential
+  through `litellm_params.litellm_credential_name`. An environment-variable
+  reference is resolved by the gateway, not by the agent service.
+- Provide the exact provider/model ID and any required endpoint/version settings.
+  The agent does not provision cloud deployments or grant provider-side access.
+- Model creation remains subject to the caller's gateway permissions, feature
+  entitlements and validation. Registering a deployment is not an inference test.
+- `ADMIN_READ_ONLY=true` disables model creation while retaining model lookups.
+
 ## Optional browser SSO
 
 Set `CONNECTION_AUTH_MODE=sso` only on a gateway that implements the hosted **proxy API** authorization-code flow:

@@ -2,9 +2,9 @@
 
 Manage your LiteLLM gateway from a Slack DM.
 
-- Ask about keys, teams, budgets and spending.
+- Ask about models, keys, teams, budgets and spending.
 - Connect with your own LiteLLM admin account.
-- Create keys and update team budgets when you ask.
+- Add model deployments, create keys and update team budgets when you ask.
 - Host one agent for one gateway and one Slack workspace.
 
 ## Before you start
@@ -125,6 +125,14 @@ python doctor.py
 - After connecting your admin account, you can request changes without an extra setup step.
 - Set `ADMIN_READ_ONLY=true` and redeploy if you want to restrict your deployment to lookups.
 - Check gateway state before retrying a change after a timeout.
+
+## Add a model from chat
+
+- Ask to add a deployment with its public model name, exact provider/model ID, and authentication reference. For example: **“Add a model named support-chat using openai/gpt-4.1 and the existing gateway credential openai-production.”**
+- The agent looks for existing deployments, creates the requested model, and checks the returned deployment ID. Adding it does not test provider inference or provision provider-side access.
+- Keep provider API keys out of chat. Use a credential already stored in LiteLLM, a gateway environment-variable reference, or the provider authentication configured on your gateway. Supply provider-specific settings such as an Azure API base/version when required.
+- Your gateway needs a database, `STORE_MODEL_IN_DB=True`, and the model management endpoints. See [model creation requirements](docs/compatibility.md#model-creation).
+- Existing installations must [refresh their admin tools](docs/operations.md#enable-new-admin-tools) after upgrading; redeploying alone does not update a saved MCP allowlist.
 
 ## More help
 
