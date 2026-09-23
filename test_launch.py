@@ -12,14 +12,12 @@ from cryptography.fernet import Fernet
 from dotenv import dotenv_values
 from mcp import types
 
-from admin_api import add_admin_api_routes
 from agent import Settings
 from auth import AccessDenied, AdminAuthorizer, Principal
 from connections import COOKIE, ConnectionRequired, Connections
 from core import Journal, ToolBridge, ToolOutcomeUnknown
 from engine import AgentBusy, AgentRunner
 from setup_env import initialize
-from test_admin_api import Gateway, headers as api_headers
 from test_agent import FakeMCP, ScriptedModel, response, settings, tool
 from test_connections import Authorizer, SSO, store
 from web import create_web_app
@@ -49,7 +47,7 @@ def test_generated_secrets_are_private_unique_and_never_overwritten(tmp_path):
     {"public_url": "https://admin.example.com/subpath"},
     {"model_url": "http://gateway.example.com/v1"},
     {"model_url": "https://user:secret@gateway.example.com/v1"},
-    {"mcp_url": "https://other.example.com/personal_admin/mcp"},
+    {"mcp_url": "http://other.example.com/mcp"},
     {"encryption_key": "not-a-fernet-key"}, {"service_token": "short"},
     {"connection_auth_mode": "automatic"}, {"db_path": ":memory:"},
     {"max_pending_requests": 0}, {"run_timeout_seconds": float("nan")},
@@ -87,12 +85,9 @@ async def test_runtime_default_allows_admin_actions_and_read_only_is_opt_in(monk
     assert bool(outcome.secrets) == bool(expected_writes)
 
 
-@pytest.mark.parametrize("names,write_path,read_path", [
-    (("personal_admin-list_keys_key_list_get", "personal_admin-generate_key_fn_key_generate_post"), "/key/generate", "/team/list"),
-    (("personal_admin-model_info_v2_v2_model_info_get", "personal_admin-add_new_model_model_new_post"), "/model/new", "/v2/model/info"),
-])
+@pytest.mark.parametrize("names", [("list_keys", "create_key"), ("list_models", "add_model")])
 @pytest.mark.asyncio
-async def test_read_only_blocks_model_write_calls_and_direct_backend_bypass(names, write_path, read_path):
+async def test_read_only_blocks_writes_in_agent_bridge(names):
     calls = []
     async def invoke(**kwargs):
         calls.append(kwargs); return response({"keys": []})
@@ -103,14 +98,6 @@ async def test_read_only_blocks_model_write_calls_and_direct_backend_bypass(name
     assert not calls
     await bridge.call(names[0], {})
     assert len(calls) == 1
-    gateway = Gateway()
-    async with httpx2.AsyncClient(transport=httpx2.MockTransport(gateway.handle)) as upstream:
-        app = web.Application()
-        add_admin_api_routes(app, "https://gateway.example.com", AdminAuthorizer("https://gateway.example.com", "T", upstream), upstream, read_only=True)
-        async with TestClient(TestServer(app)) as client:
-            assert (await client.post("/admin-api" + write_path, headers=api_headers(), json={})).status == 403
-            assert not gateway.forwarded
-            assert (await client.get("/admin-api" + read_path, headers=api_headers())).status == 200
 
 
 @pytest.mark.asyncio
@@ -234,22 +221,18 @@ async def test_readiness_returns_503_on_shutdown_and_closed_database(tmp_path):
         assert (await client.get("/readyz")).status == 503
 
 
-@pytest.mark.parametrize("backend", ["https://admin.example.com/admin-api", "https://gateway.example.com"])
+@pytest.mark.parametrize("explicit_selection", [True, False])
 @pytest.mark.asyncio
-async def test_preflight_verifies_backend_without_running_tools_or_inference(tmp_path, monkeypatch, backend):
+async def test_preflight_verifies_mcp_without_running_tools_or_inference(tmp_path, monkeypatch, explicit_selection):
     import doctor
-    name = "personal_admin-list_keys_key_list_get"
-    config = replace(valid_settings(tmp_path), slack_enabled=False, read_only=True, tool_names=frozenset({name}))
+    name = "list_keys"
+    config = replace(valid_settings(tmp_path), slack_enabled=False, read_only=True, tool_names=frozenset({name}) if explicit_selection else frozenset())
     requests = []
     def handle(request):
         requests.append(request)
         if request.url.path == "/user/info":
             return httpx2.Response(200, json={"user_id": "admin", "user_info": {
                 "user_id": "admin", "user_email": "admin@example.com", "user_role": "proxy_admin"}})
-        if request.url.path == "/openapi.json":
-            return httpx2.Response(200, json={"paths": {"/key/list": {"get": {"operationId": "list_keys_key_list_get"}}}})
-        if request.url.path == "/v1/mcp/server":
-            return httpx2.Response(200, json=[{"alias": "personal_admin", "url": backend, "credentials": {}, "auth_type": "bearer_token"}])
         if request.url.path == "/v1/models":
             return httpx2.Response(200, json={"data": [{"id": config.model}]})
         raise AssertionError("Unexpected upstream operation")
@@ -261,13 +244,8 @@ async def test_preflight_verifies_backend_without_running_tools_or_inference(tmp
     @asynccontextmanager
     async def discovery(settings, credential): yield Discovery()
     monkeypatch.setattr(doctor, "mcp_session", discovery)
-    if backend.endswith("/admin-api"):
-        results = await doctor.check(config, offline=False, credential="personal-key")
-        assert any("Native MCP discovery" in item for item in results)
-        assert any("redacted by the gateway" in item for item in results)
-    else:
-        with pytest.raises(ValueError, match="role-gated|/admin-api"):
-            await doctor.check(config, offline=False, credential="personal-key")
+    results = await doctor.check(config, offline=False, credential="personal-key")
+    assert any("LiteLLM Admin MCP discovery" in item for item in results)
     assert requests and all(request.method == "GET" for request in requests)
 
 

@@ -21,8 +21,7 @@ services:
       SLACK_ENABLED: ${SLACK_ENABLED:-true}
       LITELLM_BASE_URL: ${LITELLM_BASE_URL:?Set your gateway URL}
       LITELLM_MODEL: ${LITELLM_MODEL:?Set a gateway model name}
-      LITELLM_MCP_URL: ${LITELLM_MCP_URL:-}
-      LITELLM_MCP_ALIAS: personal_admin
+      ADMIN_MCP_URL: ${ADMIN_MCP_URL:-}
       ADMIN_TOOL_NAMES: ${ADMIN_TOOL_NAMES:-}
       CONNECTION_AUTH_MODE: ${CONNECTION_AUTH_MODE:-api_key}
       ADMIN_READ_ONLY: ${ADMIN_READ_ONLY:-false}

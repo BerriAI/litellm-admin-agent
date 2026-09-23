@@ -33,3 +33,13 @@ uv pip compile --python-version 3.12 --generate-hashes requirements-dev.in -o re
 ```
 
 - Run the tests and Docker checks before opening a pull request.
+
+## Connector boundary
+
+The public `litellm-admin-mcp` release owns route selection, OpenAPI schemas,
+management API calls and transport authorization. Add or change gateway tools
+there first, then update this agent's pinned dependency. Agent tests cover the
+conversation runner, private key delivery, caller propagation and model creation
+through a real connector subprocess; connector tests cover direct MCP policies
+and both transports. The old HTTP backend and registration tests moved with that
+responsibility.

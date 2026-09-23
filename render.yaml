@@ -34,8 +34,6 @@ services:
         sync: false
       - key: SLACK_APP_TOKEN
         sync: false
-      - key: LITELLM_MCP_ALIAS
-        value: personal_admin
       - key: CONNECTION_AUTH_MODE
         # Choose api_key or sso at creation; keep that choice on later syncs.
         sync: false

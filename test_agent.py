@@ -14,7 +14,6 @@ from app import Settings, build_listener
 from auth import AccessDenied, Principal
 from connections import Connection
 from core import Journal, SecretBoundary, ToolBridge, ToolOutcomeUnknown, authorized_event
-from configure_mcp import registration
 
 
 def event(event_id="Ev1", user="Uadmin", team="Tberri", channel_type="im"):
@@ -82,7 +81,7 @@ class FakeConnections:
 
 
 def settings():
-    return Settings("Tberri", "https://example.com/personal_admin/mcp", "personal_admin",
+    return Settings("Tberri", "",
                     frozenset({"create_key"}), "https://example.com/v1", "test", "unused", "unused", ":memory:")
 
 
@@ -165,8 +164,8 @@ async def test_exact_duplicate_tool_invocation_only_executes_once():
 
 @pytest.mark.asyncio
 async def test_verification_reads_refresh_gateway_state_without_replaying_writes():
-    read = "personal_admin-team_info_team_info_get"
-    write = "personal_admin-update_team_team_update_post"
+    read = "get_team"
+    write = "update_team"
     tools = [types.Tool(name=name, inputSchema={"type": "object"}) for name in (read, write)]
     state = {"max_budget": 10}
     calls = []
@@ -204,8 +203,8 @@ async def test_uncertain_mutation_stops_run_without_automatic_retry():
 
 @pytest.mark.asyncio
 async def test_failed_read_allows_alternative_lookup_without_replaying_failure():
-    first = "litellm_admin-get_global_spend_report_global_spend_report_get"
-    second = "litellm_admin-list_keys_key_list_get"
+    first = "get_spend_report"
+    second = "list_keys"
     tools = [types.Tool(name=n, inputSchema={"type": "object", "properties": {}}) for n in (first, second)]
     calls = []
     async def invoke(name, arguments):
@@ -262,27 +261,21 @@ def test_hashed_key_identifiers_survive_redaction_but_credentials_do_not():
     assert boundary.clean({"access_token": digest}) == {"access_token": "[redacted]"}
 
 
-def test_registration_only_selects_known_admin_routes_from_live_spec():
-    spec = {"paths": {
-        "/key/generate": {"post": {"operationId": "generate_key_fn_key_generate_post"}},
-        "/team/info": {"get": {"operationId": "team_info_team_info_get"}},
-        "/cache/flushall": {"post": {"operationId": "flush_everything"}},
-    }}
-    payload = registration(spec, "https://gateway.example.com", "https://agent.example.com")
-    assert payload["allowed_tools"] == ["generate_key_fn_key_generate_post", "team_info_team_info_get"]
-    assert payload["allow_all_keys"] is True
-    assert payload["url"] == "https://agent.example.com/admin-api"
-    assert payload["spec_path"] == "https://gateway.example.com/openapi.json"
-    assert payload["available_on_public_internet"] is False
-    assert payload["credentials"] == {}
 
-
-def test_registration_refuses_empty_selection():
+def test_default_discovery_uses_only_recognized_available_tools():
+    tools = [tool(), tool("unknown_remote_tool")]
+    bridge = ToolBridge(tools, frozenset(), FakeMCP().call_tool, Journal(":memory:"), "ev")
+    assert set(bridge.tools) == {"create_key"}
     with pytest.raises(ValueError):
-        registration({"paths": {}}, "https://gateway.example.com", "https://agent.example.com")
+        ToolBridge(tools, frozenset({"list_models"}), FakeMCP().call_tool, Journal(":memory:"), "ev")
+    with pytest.raises(ValueError):
+        ToolBridge(tools, frozenset({"unknown_remote_tool"}), FakeMCP().call_tool, Journal(":memory:"), "ev")
 
 
-def test_registration_rejects_operation_id_drift_before_enabling_unclassified_tools():
-    with pytest.raises(ValueError, match="operation ID changed"):
-        registration({"paths": {"/key/generate": {"post": {"operationId": "changed"}}}},
-                     "https://gateway.example.com", "https://agent.example.com")
+def test_read_only_allowlist_accepts_writes_hidden_by_connector_without_broadening_reads():
+    bridge = ToolBridge([tool("list_keys"), tool("list_teams")], frozenset({"list_keys", "create_key"}),
+                        FakeMCP().call_tool, Journal(":memory:"), "ev", read_only=True)
+    assert set(bridge.tools) == {"list_keys"}
+    with pytest.raises(ValueError):
+        ToolBridge([tool("list_keys")], frozenset({"list_teams", "create_key"}),
+                   FakeMCP().call_tool, Journal(":memory:"), "ev", read_only=True)

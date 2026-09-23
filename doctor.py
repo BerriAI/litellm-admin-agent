@@ -11,8 +11,8 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from agent import Settings, mcp_session
 from auth import AdminAuthorizer
-from configure_mcp import registration
 from core import all_tools, is_read_only
+from litellm_admin_mcp.catalog import BY_NAME
 
 
 async def check(settings: Settings, *, offline: bool, credential: str = "") -> list[str]:
@@ -31,25 +31,6 @@ async def check(settings: Settings, *, offline: bool, credential: str = "") -> l
         await auth.require_gateway_admin(credential)
         results.append("Gateway credential has a live proxy_admin identity: OK")
         headers = {"Authorization": "Bearer " + credential}
-        spec = await client.get(settings.gateway_url + "/openapi.json", headers=headers)
-        spec.raise_for_status()
-        expected = registration(spec.json(), settings.gateway_url, settings.public_url)
-        results.append("Gateway management routes and operation IDs: OK")
-        registered = await client.get(settings.gateway_url + "/v1/mcp/server", headers=headers)
-        registered.raise_for_status()
-        servers = registered.json()
-        if isinstance(servers, dict):
-            servers = servers.get("servers", servers.get("data"))
-        if not isinstance(servers, list) or any(not isinstance(row, dict) for row in servers):
-            raise ValueError("Unexpected gateway MCP registration list")
-        matches = [row for row in servers if row.get("alias") == settings.mcp_alias]
-        if (len(matches) != 1 or matches[0].get("url") != expected["url"]
-                or matches[0].get("credentials") or matches[0].get("auth_type") != "bearer_token"):
-            raise ValueError("The personal_admin registration must use this agent’s /admin-api backend, bearer_token auth and no stored credentials. Inspect the registration before continuing.")
-        results.append("MCP backend URL and bearer authentication configuration: OK")
-        # LiteLLM redacts stored secrets from this listing. An empty response is
-        # not evidence that no credential is stored in the gateway database.
-        results.append("Stored MCP credentials are redacted by the gateway. The setup helper creates an empty credential configuration; verify that existing registrations have no shared backend credential.")
         models = await client.get(settings.model_url.rstrip("/") + ("/models" if settings.model_url.endswith("/v1") else "/v1/models"), headers=headers)
         models.raise_for_status()
         if settings.model not in {m.get("id") for m in models.json().get("data", [])}:
@@ -57,12 +38,17 @@ async def check(settings: Settings, *, offline: bool, credential: str = "") -> l
         results.append("Configured model is visible to the caller (no inference performed): OK")
     async with mcp_session(settings, credential) as session:
         available = {tool.name for tool in await all_tools(session)}
-    missing = settings.tool_names - available
+    selected = settings.tool_names or frozenset(available & BY_NAME.keys())
+    if settings.read_only:
+        selected = frozenset(name for name in selected if is_read_only(name))
+    missing = selected - available
     if missing:
-        raise ValueError(f"{len(missing)} configured MCP tools are missing. Run configure_mcp.py --write-tool-names and apply the registration before deploying.")
-    if settings.read_only and not any(is_read_only(name) for name in settings.tool_names):
+        raise ValueError(f"{len(missing)} configured MCP tools are missing. Check the connector version, canonical tool names and gateway endpoint availability.")
+    if not selected:
+        raise ValueError("No recognized LiteLLM Admin MCP tools were discovered")
+    if settings.read_only and not any(is_read_only(name) for name in selected):
         raise ValueError("No recognized read tools selected for this read-only deployment")
-    results.append(f"Native MCP discovery and exact allowlist ({len(settings.tool_names)} tools): OK")
+    results.append(f"LiteLLM Admin MCP discovery and selected tools ({len(selected)} tools): OK")
     if settings.slack_enabled:
         slack = AsyncWebClient(token=settings.bot_token)
         identity = await slack.auth_test()
@@ -92,7 +78,7 @@ def main():
         raise SystemExit(str(exc)) from None
     except Exception as exc:
         # SDK exceptions may echo gateway responses, OAuth URLs or credentials.
-        raise SystemExit(f"Preflight failed ({type(exc).__name__}). Check gateway reachability, identity, MCP registration and Slack tokens; details withheld to protect credentials.") from None
+        raise SystemExit(f"Preflight failed ({type(exc).__name__}). Check gateway reachability, identity, Admin MCP connection and Slack tokens; details withheld to protect credentials.") from None
     print("\n".join(results))
 
 

@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 import json
 import os
 from datetime import datetime, timezone
-from pathlib import Path
+import sys
 
 from urllib.parse import urlparse
 
@@ -14,7 +14,9 @@ import httpx2
 from openai import AsyncOpenAI, DefaultAsyncHttpxClient
 from agents import OpenAIChatCompletionsModel
 from agents import Agent, ModelSettings, function_tool
-from mcp import ClientSession
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+from litellm_admin_mcp.catalog import BY_NAME
 from mcp.client.streamable_http import streamable_http_client
 
 from core import ToolBridge
@@ -42,6 +44,7 @@ def trusted_url(value: str, name: str, *, origin_only=False) -> None:
 
 INSTRUCTIONS = """You administer one LiteLLM deployment for an authenticated administrator in a private Slack DM or gateway agent conversation.
 Use find_admin_tools to discover exact tool names and argument schemas, then call_admin_tool.
+MCP arguments are grouped under body, query, and path; follow the discovered schema exactly.
 Only use enabled tools. Read actual state before reporting models, budgets, spend, keys, or membership.
 To add a model deployment, discover model info and model new tools. Prefer /v2/model/info
 with a model-name filter and bounded pagination; use /v1/model/info if v2 is unavailable.
@@ -86,7 +89,6 @@ Keep replies short, concrete, and suitable for Slack. Cite the model/team/key al
 class Settings:
     workspace: str
     mcp_url: str
-    mcp_alias: str
     tool_names: frozenset[str]
     model_url: str
     model: str
@@ -110,16 +112,12 @@ class Settings:
     @classmethod
     def read(cls) -> "Settings":
         model_url = os.getenv("LITELLM_BASE_URL", "").rstrip("/")
-        gateway_url = model_url.removesuffix("/v1")
-        alias = os.getenv("LITELLM_MCP_ALIAS", "personal_admin")
-        inventory = json.loads(Path(__file__).with_name("admin-operations.json").read_text())["operations"]
-        configured = os.getenv("ADMIN_TOOL_NAMES", "")
-        tool_names = (frozenset(x.strip() for x in configured.split(",") if x.strip()) if configured.strip()
-                      else frozenset(alias + "-" + item["operation_id"] for item in inventory))
+        if os.getenv("LITELLM_MCP_URL", ""):
+            raise ValueError("Remove the legacy LITELLM_MCP_URL. The agent now launches LiteLLM Admin MCP locally; use ADMIN_MCP_URL only for a standalone hosted connector.")
+        tool_names = frozenset(x.strip() for x in os.getenv("ADMIN_TOOL_NAMES", "").split(",") if x.strip())
         return cls(
             workspace=os.getenv("SLACK_WORKSPACE_ID", ""),
-            mcp_url=os.getenv("LITELLM_MCP_URL") or gateway_url + "/" + alias + "/mcp",
-            mcp_alias=alias, tool_names=tool_names,
+            mcp_url=os.getenv("ADMIN_MCP_URL", ""), tool_names=tool_names,
             model_url=model_url, model=os.getenv("LITELLM_MODEL", ""),
             bot_token=os.getenv("SLACK_BOT_TOKEN", ""), app_token=os.getenv("SLACK_APP_TOKEN", ""),
             db_path=os.getenv("STATE_DB", "data/events.sqlite3"),
@@ -135,8 +133,7 @@ class Settings:
         )
 
     def validate(self) -> None:
-        required = {"LITELLM_MCP_URL": self.mcp_url,
-                    "ADMIN_TOOL_NAMES": self.tool_names, "LITELLM_BASE_URL": self.model_url,
+        required = {"LITELLM_BASE_URL": self.model_url,
                     "LITELLM_MODEL": self.model, "CREDENTIAL_ENCRYPTION_KEY": self.encryption_key,
                     "AGENT_PUBLIC_URL or RENDER_EXTERNAL_URL": self.public_url}
         if self.slack_enabled:
@@ -146,11 +143,12 @@ class Settings:
         if missing:
             raise ValueError("Missing configuration: " + ", ".join(missing))
         trusted_url(self.model_url, "LITELLM_BASE_URL")
-        trusted_url(self.mcp_url, "LITELLM_MCP_URL")
+        if self.mcp_url:
+            trusted_url(self.mcp_url, "ADMIN_MCP_URL")
+        if self.tool_names - BY_NAME.keys():
+            raise ValueError("ADMIN_TOOL_NAMES must use canonical LiteLLM Admin MCP names; see the migration guide.")
         trusted_url(self.gateway_url, "Gateway URL", origin_only=True)
         trusted_url(self.public_url, "AGENT_PUBLIC_URL", origin_only=True)
-        if self.mcp_alias != "personal_admin" or self.mcp_url != self.gateway_url + "/" + self.mcp_alias + "/mcp":
-            raise ValueError("Use the dedicated per-user MCP registration on the trusted gateway")
         if self.connection_auth_mode not in {"sso", "api_key"}:
             raise ValueError("CONNECTION_AUTH_MODE must be sso or api_key")
         try:
@@ -170,13 +168,26 @@ class Settings:
 async def mcp_session(settings: Settings, credential: str):
     if not credential:
         raise ValueError("An explicit caller credential is required")
-    async with httpx2.AsyncClient(
-        headers={"x-litellm-api-key": f"Bearer {credential}",
-                 f"x-mcp-{settings.mcp_alias}-authorization": f"Bearer {credential}"},
-        timeout=httpx2.Timeout(60, read=120), follow_redirects=False,
-    ) as client:
-        async with streamable_http_client(settings.mcp_url, http_client=client) as (read, write):
-            async with ClientSession(read, write, read_timeout_seconds=120) as session:
+    if settings.mcp_url:
+        async with httpx2.AsyncClient(
+            headers={"Authorization": f"Bearer {credential}"},
+            timeout=httpx2.Timeout(60, read=120), follow_redirects=False,
+        ) as client:
+            async with streamable_http_client(settings.mcp_url, http_client=client) as streams:
+                async with ClientSession(*streams, read_timeout_seconds=120) as session:
+                    await session.initialize()
+                    yield session
+    else:
+        # The SDK inherits only its small default OS environment. Do not forward
+        # Slack tokens, the credential store key, or the agent service token.
+        params = StdioServerParameters(command=sys.executable, args=["-m", "litellm_admin_mcp"], env={
+            "LITELLM_BASE_URL": settings.gateway_url,
+            "LITELLM_API_KEY": credential,
+            "LITELLM_ADMIN_READ_ONLY": str(settings.read_only).lower(),
+            "LITELLM_ADMIN_TOOLS": ",".join(sorted(settings.tool_names)),
+        })
+        async with stdio_client(params) as streams:
+            async with ClientSession(*streams, read_timeout_seconds=120) as session:
                 await session.initialize()
                 yield session
 

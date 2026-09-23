@@ -1,6 +1,7 @@
 # LiteLLM Admin Agent
 
-Manage your LiteLLM gateway from a Slack DM.
+Manage your LiteLLM gateway from a Slack DM, using the standalone
+[LiteLLM Admin MCP](https://github.com/BerriAI/litellm-admin-mcp) connector.
 
 - Ask about models, keys, teams, budgets and spending.
 - Connect with your own LiteLLM admin account.
@@ -9,7 +10,7 @@ Manage your LiteLLM gateway from a Slack DM.
 
 ## Before you start
 
-- Use a LiteLLM gateway with HTTPS, a database and a model that supports tool calling. Check the [gateway requirements](docs/compatibility.md) for admin MCP support.
+- Use a LiteLLM gateway with HTTPS, a database and a model that supports tool calling. Check the [gateway requirements](docs/compatibility.md) for supported management APIs.
 - Give each user a LiteLLM `proxy_admin` account with the same email as their Slack profile.
 - Get permission to create and install a Slack app in your workspace.
 - Install Python 3.12 for the setup commands. Choose Docker Compose or a paid Render service with persistent storage for hosting.
@@ -82,34 +83,34 @@ admin.example.com {
 - Use a private network address if you run the reverse proxy in another container or on another host.
 - Keep the `admin-state` volume across restarts and upgrades.
 
-## 5. Connect the gateway tools
+## 5. Check the connection
 
-Run these setup commands on your computer after deployment.
+The agent includes a pinned LiteLLM Admin MCP package and launches it locally
+for each request with that administrator's credential. It discovers tools from
+your gateway automatically; no gateway MCP registration or separate MCP service
+is needed.
 
-- Add `LITELLM_ADMIN_KEY` to your local setup environment using your secret manager. Use this credential for setup; keep it out of the hosted service’s settings.
-- Preview the gateway tool registration and save the tool names to `.env`:
-
-```sh
-python configure_mcp.py --write-tool-names
-```
-
-- Review the preview, then create the registration:
-
-```sh
-python configure_mcp.py --apply
-```
-
-- Use the agent’s `/admin-api` address from the preview as the backend, with no stored backend credential. Inspect an existing `personal_admin` registration before changing it.
-- **Render:** copy `ADMIN_TOOL_NAMES` from local `.env` into the service’s **Environment** tab, then deploy.
-- **Docker:** reload the settings with `docker compose up -d --force-recreate`.
-- Set `LITELLM_SETUP_KEY` in your local environment to your personal proxy-admin key, then check the setup:
+- Set `LITELLM_SETUP_KEY` in your local environment to your personal proxy-admin key.
+- Run the read-only preflight:
 
 ```sh
 python doctor.py
 ```
 
-- Run this check to verify your gateway, model access, tool setup and Slack tokens without making model requests, changing gateway state or sending Slack messages.
-- Remove the setup credentials from your local environment after the check.
+This checks gateway identity, model visibility, connector discovery and Slack
+configuration without making model requests, changing gateway state or sending
+Slack messages. Remove the setup credential afterward.
+
+To restrict tools, set `ADMIN_TOOL_NAMES` to canonical connector names such as
+`list_keys,list_teams,create_key`. An empty value enables all reviewed tools
+available on your gateway, subject to read-only mode. An explicitly selected
+tool that is unavailable stops the request.
+
+To use a separately hosted LiteLLM Admin MCP, set `ADMIN_MCP_URL` to its trusted
+HTTPS endpoint, for example `https://admin-mcp.example.com/mcp`. The agent sends
+the requesting user's gateway bearer credential to that connector. Configure it
+for the same gateway and only use a server you operate and trust. Its own
+allowlist and read-only settings also apply.
 
 ## 6. Connect from Slack
 
@@ -132,7 +133,7 @@ python doctor.py
 - The agent looks for existing deployments, creates the requested model, and checks the returned deployment ID. Adding it does not test provider inference or provision provider-side access.
 - Keep provider API keys out of chat. Use a credential already stored in LiteLLM, a gateway environment-variable reference, or the provider authentication configured on your gateway. Supply provider-specific settings such as an Azure API base/version when required.
 - Your gateway needs a database, `STORE_MODEL_IN_DB=True`, and the model management endpoints. See [model creation requirements](docs/compatibility.md#model-creation).
-- Existing installations must [refresh their admin tools](docs/operations.md#enable-new-admin-tools) after upgrading; redeploying alone does not update a saved MCP allowlist.
+- Existing installations should follow the [Admin MCP migration guide](docs/operations.md#migrate-to-the-standalone-admin-mcp) to update legacy settings.
 
 ## More help
 
