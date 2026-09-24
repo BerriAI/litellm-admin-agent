@@ -20,7 +20,6 @@ from auth import AccessDenied, AdminAuthorizer, AuthorizationUnavailable
 from core import Journal, all_tools, valid_dm_event
 from connections import ConnectionRequired, ConnectionStore, Connections
 from engine import AgentBusy, AgentRunner
-from admin_api import add_admin_api_routes
 from sso import LiteLLMSSO
 
 
@@ -195,7 +194,6 @@ async def main():
             if args.web:
                 from web import create_web_app
                 web_app = create_web_app(settings, authorizer, runner, journal, connections, ready=ready)
-                add_admin_api_routes(web_app, settings.gateway_url, authorizer, auth_client, read_only=settings.read_only)
                 server = web.AppRunner(web_app, access_log=None, shutdown_timeout=20)
                 await server.setup()
                 await web.TCPSite(server, "0.0.0.0", int(os.getenv("PORT", "10000"))).start()

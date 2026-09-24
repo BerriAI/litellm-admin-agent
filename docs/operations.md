@@ -45,35 +45,44 @@ This release preserves the existing credential tables but changes deployment tem
 - Keep `CONNECTION_AUTH_MODE=sso` for existing SSO deployments. The Render Blueprint asks for a login method on creation and uses `sync: false` to preserve your choice on later updates. The Docker `.env` template starts with `api_key`.
 - If you synced an earlier Render Blueprint that set `CONNECTION_AUTH_MODE=api_key`, restore `sso` in the service’s **Environment** tab and redeploy. Updating the Blueprint alone does not undo that setting.
 - `ADMIN_READ_ONLY` defaults to false, so connected admins can request changes. Set it to true for a read-only deployment. If you deployed the earlier template with `ADMIN_READ_ONLY=true`, remove that setting or change it to false to use the new default behavior.
-- The image now includes all connection/SSO/backend assets. Compose injects only runtime configuration.
+- The image now includes all connection/SSO assets and the pinned connector package. Compose injects only runtime configuration.
 - Do not sync the generic Render blueprint over an existing service without reviewing its environment changes. Keep its current URLs, tokens, encryption key and state disk.
 
-### Enable new admin tools
+### Migrate to the standalone Admin MCP
 
-Saved MCP registrations and `ADMIN_TOOL_NAMES` do not automatically expand when
-the agent is upgraded. To enable model creation on an existing installation:
+The agent now consumes the public LiteLLM Admin MCP package. Its old `/admin-api`
+backend, gateway registration helper and duplicated route inventory have been
+removed. Existing saved connections and the journal keep their current schema.
 
-1. Deploy the updated agent code so its `/admin-api` backend serves the new routes.
-2. With your existing gateway and agent URLs in the local setup environment, run:
+1. Back up state and preserve your encryption key, login method, URLs and tokens.
+2. Remove `LITELLM_MCP_URL` and `LITELLM_MCP_ALIAS` from the service environment.
+   Leave `ADMIN_MCP_URL` empty for the bundled connector, or set it to the HTTPS
+   `/mcp` endpoint of your trusted standalone connector.
+3. Convert any explicit `ADMIN_TOOL_NAMES` allowlist to the connector's canonical
+   names. Preserve your intended restrictions. For example:
 
-   ```sh
-   python configure_mcp.py --write-tool-names
-   ```
+   | Previous name | New name |
+   | --- | --- |
+   | `personal_admin-generate_key_fn_key_generate_post` | `create_key` |
+   | `personal_admin-list_keys_key_list_get` | `list_keys` |
+   | `personal_admin-add_new_model_model_new_post` | `add_model` |
+   | `personal_admin-model_info_v2_v2_model_info_get` | `list_models` |
+   | `personal_admin-model_info_v1_v1_model_info_get` | `get_model` |
 
-3. Review the printed `allowed_tools`. The model operations are
-   `add_new_model_model_new_post`, `model_info_v2_v2_model_info_get`, and
-   `model_info_v1_v1_model_info_get`; unavailable routes are omitted.
-4. Edit the existing `personal_admin` MCP registration in your gateway and update
-   its allowed tools from that preview. Keep the backend URL, authentication,
-   access settings and empty stored credentials unchanged. Do not create a second
-   registration or point it directly at the gateway API. `--apply` intentionally
-   refuses to overwrite an existing registration.
-5. Copy the updated `ADMIN_TOOL_NAMES` into the service environment and restart
-   it. For Docker, use `docker compose up -d --build --force-recreate`. If you
-   deliberately restrict tools, retain those restrictions in both allowlists.
-6. Run `python doctor.py` with your personal setup credential and check a model
-   lookup. Model writes also require `ADMIN_READ_ONLY=false` and the gateway
+   The [connector catalog](https://github.com/BerriAI/litellm-admin-mcp/blob/main/src/litellm_admin_mcp/operations.json)
+   maps every operation ID to its canonical name. Clear `ADMIN_TOOL_NAMES` only
+   if you intend to enable all compatible reviewed tools.
+4. Rebuild/redeploy with the new hash-locked requirements. For Docker, use
+   `docker compose up -d --build --force-recreate`.
+5. Run `python doctor.py` with your personal setup credential and verify a read
+   through the agent. Model writes also require `ADMIN_READ_ONLY=false` and the
    [model creation prerequisites](compatibility.md#model-creation).
+6. Retire the old `personal_admin` gateway MCP registration after confirming no
+   other clients use it. This migration does not edit or delete it automatically.
+
+Future connector upgrades come through the agent's pinned package dependency.
+Live discovery picks up compatible routes; explicit tool restrictions continue
+to apply. See the connector's own release notes when changing its version.
 
 ## Troubleshooting
 
@@ -85,7 +94,7 @@ the agent is upgraded. To enable model creation on an existing installation:
 | Connection denied | Current gateway `proxy_admin` role, exact email match, key ownership, account/key expiry and guest/bot status |
 | Browser session rejected | Open a fresh private link in one browser; preserve Origin; HTTPS is required; the public URL must be an origin without a path |
 | SSO callback rejected | Hosted proxy API OAuth support and the exact callback allowlist; use explicitly configured personal-key mode if unsupported |
-| Admin tools unavailable | Run `doctor.py`; check `personal_admin` backend URL, empty stored credentials, per-request bearer forwarding and the exact tool allowlist |
+| Admin tools unavailable | Run `doctor.py`; check the installed connector, gateway APIs, personal credential and canonical tool allowlist; for hosted mode also check `ADMIN_MCP_URL` |
 | Writes refused | Read-only mode is enabled; changing model instructions cannot bypass it |
 | 429 / busy | Reduce traffic or tune bounded queue limits; this is a single-runner service |
 | Timeout or uncertain write | Inspect the affected gateway object and audit trail; do not blindly submit the write again |

@@ -15,16 +15,12 @@ import jsonschema
 from mcp import types
 
 
-_OPERATIONS = {
-    prefix + item["operation_id"]: item
-    for item in json.loads((Path(__file__).parent / "admin-operations.json").read_text())["operations"]
-    for prefix in ("litellm_admin-", "personal_admin-")
-}
+from litellm_admin_mcp.catalog import BY_NAME
 
 
 def is_read_only(name: str) -> bool:
-    # Use our captured route inventory; unknown tools default to possible writes.
-    return _OPERATIONS.get(name, {}).get("method") == "GET"
+    operation = BY_NAME.get(name)
+    return bool(operation and operation.read_only)
 
 
 class ToolOutcomeUnknown(RuntimeError):
@@ -179,12 +175,17 @@ class ToolBridge:
         read_only: bool = False,
     ):
         available = {t.name: t for t in tools}
-        if not allowed or allowed - available.keys():
-            raise ValueError("Select exact, available MCP tool names before starting the agent")
+        allowed = allowed or frozenset(available.keys() & BY_NAME.keys())
+        if not allowed or allowed - BY_NAME.keys():
+            raise ValueError("Select available LiteLLM Admin MCP tool names before starting the agent")
+        # The connector also filters writes before discovery. In read-only mode,
+        # configured writes are intentionally absent, not missing dependencies.
+        if read_only:
+            allowed = frozenset(name for name in allowed if is_read_only(name))
+        if allowed - available.keys():
+            raise ValueError("Select available LiteLLM Admin MCP tool names before starting the agent")
         self.tools = {name: available[name] for name in allowed}
         self.read_only = read_only
-        if read_only:
-            self.tools = {name: tool for name, tool in self.tools.items() if is_read_only(name)}
         self.invoke = invoke
         self.journal = journal
         self.event_id = event_id
@@ -203,7 +204,7 @@ class ToolBridge:
         )
         return [
             {"name": t.name, "description": (t.description or "")[:6000],
-             "route": _OPERATIONS.get(t.name, {}).get("path"), "read_only": is_read_only(t.name),
+             "route": BY_NAME[t.name].path, "read_only": is_read_only(t.name),
              "input_schema": t.input_schema}
             for t in ranked[:5]
         ]
