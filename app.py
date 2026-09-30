@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import signal
+from dataclasses import replace
 
 import httpx2
 from aiohttp import web
@@ -15,6 +16,7 @@ from agents import set_tracing_disabled
 from dotenv import load_dotenv
 from agentchat.channels import Slack
 from agentchat.models import Message
+from agentchat.integrations import to_openai_input
 from slack_sdk.web.async_client import AsyncWebClient
 
 from agent import Settings, mcp_session
@@ -108,14 +110,14 @@ def build_listener(settings: Settings, journal: Journal, client, model=None, con
                     status = "context_unavailable"
                     await reply("I couldn’t read this thread, so I haven’t run any operations. Try again, or start a new thread with the complete request.")
                     return
-                history = [{"role": item.role, "content": f"<@{item.sender.id}>: " +
-                            re.sub(r"\bsk-[A-Za-z0-9_-]{8,}", "[key redacted]", item.text[:4000])}
-                           for item in messages]
-                text = f"<@{user}>: {message.text}"
+                messages = tuple(replace(item, text=re.sub(
+                    r"\bsk-[A-Za-z0-9_-]{8,}", "[key redacted]", item.text[:4000])) for item in messages)
+                inputs = to_openai_input((*messages, message), include_senders=True)
+                history, text = inputs[:-1], inputs[-1]["content"]
             outcome = await runner.execute(text, principal,
                 message.conversation_id + ":" + connection.version, event_id, verify, connection.credential,
                 extra_tools=(slack_user_tool(channel, settings.workspace, verify),),
-                history=history, check_reply=not private and bool(message.metadata["requires_subscription"]))
+                history=history, check_reply=not message.addressed)
             if outcome.status == "ignored":
                 status = "ignored"
                 return
@@ -135,7 +137,7 @@ def build_listener(settings: Settings, journal: Journal, client, model=None, con
             status = outcome.status
         except ConnectionRequired:
             status = "connection_required"
-            if not private and message.metadata["requires_subscription"] and not ran:
+            if not message.addressed and not ran:
                 return
             try:
                 link = await connections.link(user)
@@ -156,7 +158,7 @@ def build_listener(settings: Settings, journal: Journal, client, model=None, con
             await reply("The agent is busy. No operation started for this request. Please send it again shortly.")
         except (AccessDenied, AuthorizationUnavailable) as exc:
             status = "denied" if isinstance(exc, AccessDenied) else "authorization_unavailable"
-            if not private and message.metadata["requires_subscription"] and not ran:
+            if not message.addressed and not ran:
                 return
             answer = ("Your LiteLLM admin session couldn’t be verified. Your Slack email must match an active LiteLLM proxy-admin account. Send connect to reconnect."
                       if isinstance(exc, AccessDenied) else "I can’t verify your admin access right now. Please try again later.")

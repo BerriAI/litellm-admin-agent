@@ -99,9 +99,9 @@ async def test_admins_share_visible_thread_context_but_keep_their_own_credential
     await transport.handle_event(mention(text="Alice context"))
     await transport.handle_event(followup("2.2", user="Ubob", text="Bob context"))
     assert "Alice context" in json.dumps(model.inputs[-1])
-    assert model.inputs[-1][-1] == {"role": "user", "content": "<@Ubob>: Bob context"}
+    assert json.loads(model.inputs[-1][-1]["content"]) == {"sender_id": "Ubob", "text": "Bob context"}
     await transport.handle_event(followup("3.3", text="My follow-up"))
-    assert model.inputs[-1][0]["content"] == "<@Uadmin>: <@BOT> Alice context"
+    assert json.loads(model.inputs[-1][0]["content"]) == {"sender_id": "Uadmin", "text": "<@BOT> Alice context"}
     assert "Bob context" in json.dumps(model.inputs[-1])
     before = len(model.inputs)
     await transport.handle_event(followup("4.4", user="Uregular"))

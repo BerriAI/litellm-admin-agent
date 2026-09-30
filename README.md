@@ -127,7 +127,8 @@ Every request checks the sender's own connected account and current `proxy_admin
 role. Admins share the visible channel-thread context, fetched from Slack with
 speaker identities before each turn. Each operation uses the current sender's own
 credential; private DM history and tool results are not shared across admins.
-Untagged thread replies are checked for relevance before opening admin tools.
+AgentChat supplies the native thread history, speaker-preserving model input and
+optional reply filter. Untagged thread replies are checked for relevance before opening admin tools.
 Replies that supply missing information continue the task; side conversations
 addressed to teammates receive no bot response. The agent knows its configured model name.
 Ordinary channel answers are visible to channel participants. Sign-in links and
