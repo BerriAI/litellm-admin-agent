@@ -9,5 +9,6 @@
 !web.py
 !connections.py
 !sso.py
+!slack_tools.py
 !connect.js
 !doctor.py

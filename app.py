@@ -22,6 +22,7 @@ from core import Journal, SlackThreads, all_tools
 from connections import ConnectionRequired, ConnectionStore, Connections
 from engine import AgentBusy, AgentRunner
 from sso import LiteLLMSSO
+from slack_tools import slack_user_tool
 
 
 def chunks(text: str, size: int = 3000):
@@ -94,7 +95,8 @@ def build_listener(settings: Settings, journal: Journal, client, model=None, con
             await channel.subscribe(message)
             pending = await channel.reply(message, "Working on your request…")
             outcome = await runner.execute(message.text, principal,
-                message.conversation_id + ":" + connection.version, event_id, verify, connection.credential)
+                message.conversation_id + ":" + connection.version, event_id, verify, connection.credential,
+                extra_tools=(slack_user_tool(channel, settings.workspace, verify),))
             # Revocation during a run must also stop private data delivery.
             await verify()
             parts = list(chunks(outcome.answer))
