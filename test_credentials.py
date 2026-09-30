@@ -102,9 +102,8 @@ async def test_no_credential_never_falls_back_to_global_environment(monkeypatch)
 
 @pytest.mark.asyncio
 async def test_slack_disconnect_during_run_stops_tools_and_delivery():
-    from app import build_listener
     from connections import ConnectionRequired
-    from test_agent import FakeAuthorizer, FakeConnections, FakeSlack, event
+    from test_agent import FakeAuthorizer, FakeConnections, FakeSlack, channel, event
     class Connections(FakeConnections):
         revoked = False
         def get(self, user):
@@ -122,9 +121,9 @@ async def test_slack_disconnect_during_run_stops_tools_and_delivery():
         if model.index == 2: connections.revoked = True
         return result
     model.get_response = revoke
-    handler = build_listener(settings(), Journal(":memory:"), model, connect,
+    handler = channel(slack, Journal(":memory:"), model, connect,
                              authorizer=FakeAuthorizer(), connections=connections)
-    await handler(event(), slack)
+    await handler.handle_event(event())
     assert not mcp.calls
     assert not any("sk-created" in str(message) for message in slack.posts + slack.updates)
     assert "run stopped" in slack.updates[-1]["text"]

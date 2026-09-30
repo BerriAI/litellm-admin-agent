@@ -1,7 +1,7 @@
 {
   "display_information": {
     "name": "LiteLLM Admin",
-    "description": "Keys, teams and budgets for LiteLLM gateway admins. Message privately to get started.",
+    "description": "Keys, teams and budgets for LiteLLM gateway admins. DM or mention in a channel to get started.",
     "background_color": "#111827"
   },
   "features": {
@@ -20,6 +20,10 @@
       "bot": [
         "chat:write",
         "im:history",
+        "app_mentions:read",
+        "channels:history",
+        "groups:history",
+        "reactions:write",
         "users:read",
         "users:read.email"
       ]
@@ -28,7 +32,10 @@
   "settings": {
     "event_subscriptions": {
       "bot_events": [
-        "message.im"
+        "message.im",
+        "app_mention",
+        "message.channels",
+        "message.groups"
       ]
     },
     "socket_mode_enabled": true,

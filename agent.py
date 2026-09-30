@@ -1,4 +1,4 @@
-"""Private Slack conversations backed by LiteLLM models and admin MCP tools."""
+"""Admin conversations backed by LiteLLM models and admin MCP tools."""
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -42,7 +42,8 @@ def trusted_url(value: str, name: str, *, origin_only=False) -> None:
         raise ValueError(f"{name} has an invalid port") from None
 
 
-INSTRUCTIONS = """You administer one LiteLLM deployment for an authenticated administrator in a private Slack DM or gateway agent conversation.
+INSTRUCTIONS = """You administer one LiteLLM deployment for an authenticated administrator in a Slack DM, channel thread or gateway agent conversation.
+Channel replies are visible to channel participants. Generated keys are delivered separately and privately to the requesting admin.
 Use find_admin_tools to discover exact tool names and argument schemas, then call_admin_tool.
 MCP arguments are grouped under body, query, and path; follow the discovered schema exactly.
 Only use enabled tools. Read actual state before reporting models, budgets, spend, keys, or membership.

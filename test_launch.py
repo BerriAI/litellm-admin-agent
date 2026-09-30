@@ -1,5 +1,4 @@
 import asyncio
-import json
 import re
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -13,7 +12,7 @@ from dotenv import dotenv_values
 from mcp import types
 
 from agent import Settings
-from auth import AccessDenied, AdminAuthorizer, Principal
+from auth import Principal
 from connections import COOKIE, ConnectionRequired, Connections
 from core import Journal, ToolBridge, ToolOutcomeUnknown
 from engine import AgentBusy, AgentRunner
@@ -262,3 +261,61 @@ async def test_shutdown_cancels_active_run_without_releasing_its_lock_early():
     assert task.cancelled() and not runner.accepting and runner.pending == 0
     assert not runner.lock.locked()
     with pytest.raises(AgentBusy): await runner.execute("another", PRINCIPAL, "ctx", "next", verify, "key")
+
+
+@pytest.mark.parametrize("startup_fails", [False, True])
+@pytest.mark.asyncio
+async def test_agentchat_service_readiness_and_shutdown(tmp_path, monkeypatch, startup_fails):
+    import signal
+    import app as service
+    import web as web_service
+
+    config = valid_settings(tmp_path)
+    monkeypatch.setattr(service.Settings, "read", lambda: config)
+    monkeypatch.setattr(service, "load_dotenv", lambda: None)
+    monkeypatch.setattr("sys.argv", ["app.py", "--web"])
+    callbacks, state = {}, {}
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "add_signal_handler", lambda sig, callback: callbacks.update({sig: callback}))
+
+    def create_app(*args, ready, **kwargs):
+        state["ready"] = ready
+        return object()
+
+    class Server:
+        def __init__(self, *args, **kwargs): pass
+        async def setup(self): assert not await state["ready"]()
+        async def cleanup(self): state["cleaned_up"] = True
+
+    class Site:
+        def __init__(self, *args): pass
+        async def start(self): pass
+
+    class Transport:
+        connected = False
+        def __init__(self, **kwargs):
+            self.closed = asyncio.Event()
+        def bind(self, receiver): state["bound"] = receiver
+        async def is_connected(self): return self.connected
+        async def run(self):
+            if startup_fails: raise RuntimeError("Socket startup failed")
+            self.connected = True
+            assert await state["ready"]()
+            callbacks[signal.SIGTERM]()
+            assert not await state["ready"]()
+            await self.closed.wait()
+        async def close(self):
+            self.connected = False
+            self.closed.set()
+            state["closed"] = True
+
+    monkeypatch.setattr(service, "Slack", Transport)
+    monkeypatch.setattr(web_service, "create_web_app", create_app)
+    monkeypatch.setattr(service.web, "AppRunner", Server)
+    monkeypatch.setattr(service.web, "TCPSite", Site)
+    if startup_fails:
+        with pytest.raises(RuntimeError, match="Socket startup failed"):
+            await service.main()
+    else:
+        await service.main()
+    assert state["bound"] and state["closed"] and state["cleaned_up"]
