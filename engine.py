@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from contextlib import asynccontextmanager
 from typing import Awaitable, Callable
 
-from agents import Runner, RunConfig
+from agents import FunctionTool, Runner, RunConfig
 
 from agent import Settings, agent_for, mcp_session, model_session
 from auth import Principal
@@ -48,7 +48,8 @@ class AgentRunner:
                 yield model
 
     async def execute(self, text: str, principal: Principal, context: str, event_id: str,
-                      verify: Callable[[], Awaitable[None]], credential: str) -> Outcome:
+                      verify: Callable[[], Awaitable[None]], credential: str,
+                      *, extra_tools: tuple[FunctionTool, ...] = ()) -> Outcome:
         if not self.accepting or self.pending >= self.settings.max_pending_requests:
             raise AgentBusy()
         task = asyncio.current_task()
@@ -60,7 +61,7 @@ class AgentRunner:
             except TimeoutError:
                 raise AgentBusy() from None
             try:
-                return await self._execute(text, principal, context, event_id, verify, credential)
+                return await self._execute(text, principal, context, event_id, verify, credential, extra_tools)
             finally:
                 self.lock.release()
         finally:
@@ -75,7 +76,7 @@ class AgentRunner:
                 task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
 
-    async def _execute(self, text, principal, context, event_id, verify, credential) -> Outcome:
+    async def _execute(self, text, principal, context, event_id, verify, credential, extra_tools) -> Outcome:
         identity = (principal.actor, context)
         bridge = None
         stage = "authorization"
@@ -89,7 +90,7 @@ class AgentRunner:
                     bridge = ToolBridge(await all_tools(session), self.settings.tool_names, session.call_tool,
                                         self.journal, event_id, ensure_authorized=verify, read_only=self.settings.read_only)
                     stage = "agent_run"
-                    agent = agent_for(bridge, model)
+                    agent = agent_for(bridge, model, extra_tools=extra_tools)
                     if self.settings.read_only:
                         agent.instructions += "\nThis deployment is read-only. Explain that changes require the operator to enable writes."
                     agent.instructions += "\nAuthenticated requesting LiteLLM user: " + principal.user_id

@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 import httpx2
 from openai import AsyncOpenAI, DefaultAsyncHttpxClient
 from agents import OpenAIChatCompletionsModel
-from agents import Agent, ModelSettings, function_tool
+from agents import Agent, FunctionTool, ModelSettings, function_tool
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from litellm_admin_mcp.catalog import BY_NAME
@@ -47,6 +47,12 @@ Channel replies are visible to channel participants. Generated keys are delivere
 Use find_admin_tools to discover exact tool names and argument schemas, then call_admin_tool.
 MCP arguments are grouped under body, query, and path; follow the discovered schema exactly.
 Only use enabled tools. Read actual state before reporting models, budgets, spend, keys, or membership.
+When get_slack_user is available, resolve a Slack mention like <@U012ABCDEF> with that tool
+before asking for an email or LiteLLM user ID. Use the profile email to search /user/list;
+require an exact email match and use the returned LiteLLM user_id, never the Slack ID.
+Do not guess an email from a name or create a new user automatically. Ask for clarification
+if the profile has no email, the lookup fails, or gateway records have no unique exact match.
+Refer to the person by their Slack mention in channel replies; do not echo their email unnecessarily.
 To add a model deployment, discover model info and model new tools. Prefer /v2/model/info
 with a model-name filter and bounded pagination; use /v1/model/info if v2 is unavailable.
 Check existing deployments first. Do not create a duplicate unless the user requests another deployment.
@@ -202,7 +208,7 @@ async def model_session(settings: Settings, credential: str):
         yield OpenAIChatCompletionsModel(model=settings.model, openai_client=client)
 
 
-def agent_for(bridge: ToolBridge, model) -> Agent:
+def agent_for(bridge: ToolBridge, model, *, extra_tools: tuple[FunctionTool, ...] = ()) -> Agent:
     @function_tool
     def find_admin_tools(query: str) -> str:
         """Find up to five enabled tools with their exact names and argument schemas."""
@@ -215,6 +221,6 @@ def agent_for(bridge: ToolBridge, model) -> Agent:
 
     return Agent(
         name="LiteLLM Admin", instructions=INSTRUCTIONS + "\nCurrent UTC date: " + datetime.now(timezone.utc).date().isoformat(), model=model,
-        tools=[find_admin_tools, call_admin_tool],
+        tools=[find_admin_tools, call_admin_tool, *extra_tools],
         model_settings=ModelSettings(parallel_tool_calls=False),
     )

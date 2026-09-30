@@ -128,6 +128,13 @@ role. Different admins in one thread have separate credentials and model history
 Ordinary channel answers are visible to channel participants. Sign-in links and
 generated keys are sent only to the requesting admin in a DM.
 
+You can mention someone in a request, for example **“Create a key for @teammate.”**
+The agent uses AgentChat's native Slack profile lookup to find their email, then
+matches it to an existing LiteLLM user. It asks for clarification if Slack does
+not expose an email or the gateway match is ambiguous. The included manifest
+already requests `users:read` and `users:read.email`; no extra permission is needed
+when both are already installed. A Slack profile lookup does not grant admin access.
+
 Only a verified admin request starts thread tracking. After connecting from a
 channel prompt, mention the bot again. Threads are followed for seven days after
 the last verified admin message, up to 1,000 active threads. Tracked threads survive
