@@ -4,11 +4,34 @@
 
 Run exactly **one process and one replica** per deployment. Slack Socket Mode deliveries, SQLite state and in-memory conversation history are local to this service. Multiple replicas are not a high-availability configuration.
 
-`STATE_DB` contains encrypted connections, expiring connection links, replay identifiers and an audit journal with actor IDs/tool names/statuses. It does not store tool arguments or results. Conversations are in memory, isolated per caller/transport/conversation, bounded to 100 conversations and 20 messages each, and clear on restart.
+`STATE_DB` contains encrypted connections, expiring connection links, replay identifiers, accepted Slack thread IDs and an audit journal with actor IDs/tool names/statuses. It does not store tool arguments or results. Conversations are in memory, isolated per caller/transport/conversation, bounded to 100 conversations and 20 messages each, and clear on restart.
+
+AgentChat handles Slack Socket Mode and routing; the existing agent runner owns history and execution. Accepted thread IDs persist for seven days since last verified admin activity, capped at 1,000. History is also separated by each saved connection version, so reconnecting starts fresh context.
 
 Requests execute serially. `MAX_PENDING_REQUESTS` defaults to 8 including the active run, `QUEUE_TIMEOUT_SECONDS` to 30 and `RUN_TIMEOUT_SECONDS` to 180. Run deadlines do not undo completed gateway actions. Queue rejection starts no tools. The agent never automatically retries an uncertain write. Slack delivery retries and duplicate A2A IDs cannot replay an accepted event.
 
 The process stops accepting new work on SIGTERM/SIGINT and drains or cancels active handlers before closing its database. Leave at least 75 seconds of shutdown grace with the provided configuration. If a host kills the process abruptly, its journal preserves the received event ID; inspect any `started`/`outcome_unknown` actions before retrying.
+
+## Upgrade Slack conversations
+
+1. Update the existing Slack app with [`slack-manifest.json`](../slack-manifest.json).
+   Add `app_mention`, `message.channels` and `message.groups` alongside `message.im`.
+   New bot scopes are `app_mentions:read`, `channels:history`, `groups:history` and
+   `reactions:write`. These allow mentions, follow-ups in channels the bot belongs
+   to, and an eyes acknowledgement reaction.
+2. Reinstall the app into the workspace to grant the added scopes. If Slack issues
+   a replacement bot token, update `SLACK_BOT_TOKEN` in the service environment.
+3. Deploy the updated service as a single instance with the existing state volume
+   and encryption key. Existing connections and replay records are preserved.
+4. Add the bot to the desired channels. An admin mentions it once, then replies in
+   its thread. Without channel-history event subscriptions, untagged follow-ups
+   cannot reach the bot. Unrelated channel chatter is ignored.
+
+No additional gateway role, shared administrator key or new login flow is needed.
+Use DMs for requests whose ordinary answers should remain private. With permission
+to send live test messages, verify a read-only DM and a channel mention/follow-up,
+then verify that a non-admin cannot run operations. The automated tests do not
+change the installed Slack app or post live messages.
 
 ## Monitoring
 
@@ -90,6 +113,7 @@ to apply. See the connector's own release notes when changing its version.
 | --- | --- |
 | Bot does not appear or accept DMs | Install the manifest into the correct workspace; enable the Messages tab and `message.im`; reconnect the Slack client if necessary |
 | Missing scopes or workspace mismatch | Reinstall the app and use that installation’s bot token and workspace ID |
+| Bot ignores channel mentions or thread replies | Reinstall the updated manifest, check the channel events/scopes, add the bot to that channel, and start with a verified admin mention |
 | `/readyz` returns 503 | Slack app token / `connections:write`, outbound WSS, socket disconnects, persistent storage and process shutdown |
 | Connection denied | Current gateway `proxy_admin` role, exact email match, key ownership, account/key expiry and guest/bot status |
 | Browser session rejected | Open a fresh private link in one browser; preserve Origin; HTTPS is required; the public URL must be an origin without a path |

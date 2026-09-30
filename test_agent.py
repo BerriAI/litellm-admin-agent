@@ -1,7 +1,6 @@
 import copy
 import json
 from contextlib import asynccontextmanager
-from types import SimpleNamespace
 
 import pytest
 from agents import ModelResponse
@@ -10,10 +9,12 @@ from agents.usage import Usage
 from mcp import types
 from openai.types.responses import ResponseFunctionToolCall, ResponseOutputMessage, ResponseOutputText
 
+from agentchat.channels import Slack
+
 from app import Settings, build_listener
 from auth import AccessDenied, Principal
 from connections import Connection
-from core import Journal, SecretBoundary, ToolBridge, ToolOutcomeUnknown, authorized_event
+from core import Journal, SecretBoundary, ToolBridge, ToolOutcomeUnknown, SlackThreads
 
 
 def event(event_id="Ev1", user="Uadmin", team="Tberri", channel_type="im"):
@@ -44,7 +45,8 @@ class FakeMCP:
 
 
 class FakeSlack:
-    def __init__(self): self.posts = []; self.updates = []
+    def __init__(self): self.posts = []; self.updates = []; self.reactions = []
+    async def reactions_add(self, **kwargs): self.reactions.append(kwargs)
     async def chat_postMessage(self, **kwargs):
         self.posts.append(kwargs)
         return {"ts": f"reply.{len(self.posts)}"}
@@ -85,13 +87,14 @@ def settings():
                     frozenset({"create_key"}), "https://example.com/v1", "test", "unused", "unused", ":memory:")
 
 
-@pytest.mark.parametrize("body", [
-    event(user="Uother"), event(team="Tother"), event(channel_type="channel"), event(channel_type="mpim"),
-    {**event(), "event": {**event()["event"], "bot_id": "B1"}},
-    {**event(), "event": {**event()["event"], "subtype": "message_changed"}},
-])
-def test_non_admin_or_non_private_events_are_denied(body):
-    assert not authorized_event(body, "Tberri", frozenset({"Uadmin"}))
+def channel(client, journal, model=None, connect=None, **kwargs):
+    transport = Slack(bot_token="test", app_token="test", web_client=client,
+                      workspace_id="Tberri", bot_user_id="BOT", thread_subscriptions=SlackThreads(journal))
+    options = {"model": model, **kwargs}
+    if connect is not None:
+        options["connect"] = connect
+    transport.bind(build_listener(settings(), journal, client, **options))
+    return transport
 
 
 @pytest.mark.asyncio
@@ -99,17 +102,18 @@ async def test_real_runner_discovers_calls_and_delivers_key_only_in_private_repl
     mcp = FakeMCP(); slack = FakeSlack(); model = ScriptedModel(); journal = Journal(":memory:")
     @asynccontextmanager
     async def connect(_, credential): yield mcp
-    handler = build_listener(settings(), journal, model, connect, authorizer=FakeAuthorizer(), connections=FakeConnections())
-    await handler(event(), slack)
+    handler = channel(slack, journal, model, connect, authorizer=FakeAuthorizer(), connections=FakeConnections())
+    await handler.handle_event(event())
     assert len(mcp.calls) == 1
     assert "sk-created0123456789" not in json.dumps(model.inputs)
     assert len(slack.posts) == 2
     assert "sk-created0123456789" in slack.posts[1]["text"]
-    assert all(x["channel"] == "Dprivate" and x["thread_ts"] is None for x in slack.posts)
+    assert slack.posts[0]["channel"] == "Dprivate" and slack.posts[0]["thread_ts"] is None
+    assert slack.posts[1]["channel"] == "Uadmin" and "thread_ts" not in slack.posts[1]
     assert slack.posts[0]["text"] == "Working on your request…"
     assert slack.updates[0]["text"] == "Created a key for Engineering with a $20 budget."
     assert journal.db.execute("SELECT status FROM events").fetchone()[0] == "completed"
-    await handler(event(), slack)
+    await handler.handle_event(event())
     assert len(mcp.calls) == 1
     assert len(slack.posts) == 2
 
@@ -119,15 +123,15 @@ async def test_main_dm_followup_keeps_context_and_thread_request_stays_in_thread
     mcp = FakeMCP(); slack = FakeSlack(); model = ScriptedModel()
     @asynccontextmanager
     async def connect(_, credential): yield mcp
-    handler = build_listener(settings(), Journal(":memory:"), model, connect, authorizer=FakeAuthorizer(), connections=FakeConnections())
-    await handler(event(), slack)
+    handler = channel(slack, Journal(":memory:"), model, connect, authorizer=FakeAuthorizer(), connections=FakeConnections())
+    await handler.handle_event(event())
     followup = event(event_id="Ev2")
     followup["event"].update(text="What budget did you set?", ts="2.2")
-    await handler(followup, slack)
+    await handler.handle_event(followup)
     assert any(x.get("role") == "assistant" for x in model.inputs[-1])
     threaded = event(event_id="Ev3")
-    threaded["event"]["thread_ts"] = "original.1"
-    await handler(threaded, slack)
+    threaded["event"].update(thread_ts="original.1", ts="3.3")
+    await handler.handle_event(threaded)
     assert slack.posts[-1]["thread_ts"] == "original.1"
 
 
@@ -138,7 +142,7 @@ async def test_denied_event_never_connects_to_mcp_or_runs_model():
         raise AssertionError("Unauthorized event reached MCP")
         yield
     slack = FakeSlack()
-    await build_listener(settings(), Journal(":memory:"), ScriptedModel(), connect, authorizer=FakeAuthorizer(), connections=FakeConnections())(event(user="Uother"), slack)
+    await channel(slack, Journal(":memory:"), ScriptedModel(), connect, authorizer=FakeAuthorizer(), connections=FakeConnections()).handle_event(event(user="Uother"))
     assert len(slack.posts) == 1
     assert "active LiteLLM proxy-admin account" in slack.posts[0]["text"]
 
@@ -230,7 +234,7 @@ async def test_connection_failure_does_not_claim_a_mutation_may_have_completed()
         raise ConnectionError("gateway unavailable")
         yield
     slack = FakeSlack()
-    await build_listener(settings(), Journal(":memory:"), ScriptedModel(), connect, authorizer=FakeAuthorizer(), connections=FakeConnections())(event(), slack)
+    await channel(slack, Journal(":memory:"), ScriptedModel(), connect, authorizer=FakeAuthorizer(), connections=FakeConnections()).handle_event(event())
     assert "No requested operation was run" in slack.updates[0]["text"]
     assert "may already have completed" not in slack.updates[0]["text"]
 

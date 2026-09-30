@@ -12,12 +12,13 @@ import httpx2
 from aiohttp import web
 from agents import set_tracing_disabled
 from dotenv import load_dotenv
-from slack_bolt.async_app import AsyncApp
-from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
+from agentchat.channels import Slack
+from agentchat.models import Message
+from slack_sdk.web.async_client import AsyncWebClient
 
 from agent import Settings, mcp_session
 from auth import AccessDenied, AdminAuthorizer, AuthorizationUnavailable
-from core import Journal, all_tools, valid_dm_event
+from core import Journal, SlackThreads, all_tools
 from connections import ConnectionRequired, ConnectionStore, Connections
 from engine import AgentBusy, AgentRunner
 from sso import LiteLLMSSO
@@ -28,115 +29,118 @@ def chunks(text: str, size: int = 3000):
         yield text[i:i + size]
 
 
-def build_listener(settings: Settings, journal: Journal, model=None, connect=mcp_session,
+def build_listener(settings: Settings, journal: Journal, client, model=None, connect=mcp_session,
                    *, authorizer, connections, runner=None):
     runner = runner or AgentRunner(settings, journal, model, connect)
 
-    async def process(body, client):
-        if not valid_dm_event(body, settings.workspace):
+    async def handle(channel: Slack, message: Message):
+        if (message.metadata.get("team_id") != settings.workspace
+                or message.metadata.get("channel_type") not in {"im", "channel", "group"}):
             return
-        event = body["event"]
-        event_id = body["event_id"]
-        if not journal.claim(event_id, "slack:" + event["user"]):
+        user = message.sender.id
+        event_id = message.metadata["event_id"]
+        # Preserve old event-ID records and coalesce app_mention/message deliveries.
+        event_ids = list(dict.fromkeys([event_id, message.id]))
+        if not journal.claim_many(event_ids, "slack:" + user):
             return
-        channel, thread = event["channel"], event.get("thread_ts")
-        pending_ts = None
+        private = message.metadata["channel_type"] == "im"
+        pending = None
         status = "failed"
+
+        async def reply(answer):
+            if pending:
+                await client.chat_update(channel=message.metadata["channel_id"],
+                                         ts=pending.metadata["message_timestamp"], text=answer)
+            else:
+                await channel.reply(message, answer)
+
+        async def send_private(answer):
+            try:
+                await client.chat_postMessage(channel=user, text=answer,
+                                              unfurl_links=False, unfurl_media=False)
+                return True
+            except Exception as exc:
+                logging.warning("Private Slack reply failed (%s)", type(exc).__name__)
+                return False
+
         try:
-            command = event["text"].strip().casefold()
+            command = message.text.casefold()
             if command == "disconnect":
-                await authorizer.slack_email(event["user"], client)
-                connections.disconnect(event["user"])
+                await authorizer.slack_email(user, client)
+                connections.disconnect(user)
                 runner.conversations = {k: v for k, v in runner.conversations.items()
-                                        if not k[0].startswith("slack:" + event["user"] + ":")}
-                await client.chat_postMessage(channel=channel, thread_ts=thread,
-                    text="Your LiteLLM account is disconnected. Your saved credential has been removed.")
+                                        if not k[0].startswith("slack:" + user + ":")}
+                await reply("Your LiteLLM account is disconnected. Your saved credential has been removed.")
                 status = "completed"
                 return
             if command == "connect":
                 raise ConnectionRequired()
-            connection = connections.get(event["user"])
-            principal = await authorizer.require_slack_admin(event["user"], client, connection.credential)
+            connection = connections.get(user)
+            principal = await authorizer.require_slack_admin(user, client, connection.credential)
             if principal.user_id != connection.user_id:
                 raise AccessDenied()
 
             async def verify():
-                current = connections.get(event["user"])
+                current = connections.get(user)
                 if current.version != connection.version:
                     raise AccessDenied()
-                if await authorizer.require_slack_admin(event["user"], client, connection.credential) != principal:
+                if await authorizer.require_slack_admin(user, client, connection.credential) != principal:
                     raise AccessDenied()
 
-            if len(event["text"]) > 16000:
-                await client.chat_postMessage(channel=channel, thread_ts=thread, text="Please keep each request under 16,000 characters.")
-                journal.finish(event_id, "rejected")
+            if len(message.text) > 16000:
+                status = "rejected"
+                await reply("Please keep each request under 16,000 characters.")
                 return
-            pending = await client.chat_postMessage(channel=channel, thread_ts=thread,
-                text="Working on your request…", unfurl_links=False, unfurl_media=False)
-            pending_ts = pending["ts"]
-            outcome = await runner.execute(event["text"], principal, channel + ":" + (thread or "main") + ":" + connection.version, event_id, verify, connection.credential)
+            await channel.subscribe(message)
+            pending = await channel.reply(message, "Working on your request…")
+            outcome = await runner.execute(message.text, principal,
+                message.conversation_id + ":" + connection.version, event_id, verify, connection.credential)
             # Revocation during a run must also stop private data delivery.
             await verify()
             parts = list(chunks(outcome.answer))
-            await client.chat_update(channel=channel, ts=pending_ts, text=parts[0])
+            await reply(parts[0])
             for part in parts[1:]:
-                await client.chat_postMessage(channel=channel, thread_ts=thread, text=part, unfurl_links=False, unfurl_media=False)
+                await channel.reply(message, part)
             for reference, secret in outcome.secrets.items():
                 await verify()
-                await client.chat_postMessage(channel=channel, thread_ts=thread,
-                    text=f"{reference}: `{secret}`\nSave this key securely. It was kept out of the model’s tool results.",
-                    unfurl_links=False, unfurl_media=False)
+                if not await send_private(f"{reference}: `{secret}`\nSave this key securely. It was kept out of the model’s tool results."):
+                    status = "reply_failed"
+                    await channel.reply(message, "Your request finished, but I couldn’t deliver a generated key in a DM. Check the key in your gateway before retrying; creating it again may make a duplicate.")
+                    return
             status = outcome.status
         except ConnectionRequired:
             status = "connection_required"
             try:
-                link = await connections.link(event["user"])
-                answer = (f"Connect your own LiteLLM admin account here: <{link}|Connect account>\n"
-                          "This private link expires in 10 minutes. Complete the secure connection page. Never paste keys into Slack. "
-                          "Then send your request again.")
-                if pending_ts:
-                    await client.chat_update(channel=channel, ts=pending_ts, text="Your account connection changed. The run stopped; inspect gateway state before retrying changes.")
-                else:
-                    await client.chat_postMessage(channel=channel, thread_ts=thread, text=answer,
-                                                  unfurl_links=False, unfurl_media=False)
+                link = await connections.link(user)
+                delivered = await send_private(f"Connect your own LiteLLM admin account here: <{link}|Connect account>\n"
+                    "This private link expires in 10 minutes. Complete the secure connection page. Never paste keys into Slack. "
+                    "Then send your request again; in a channel, mention me again.")
+                if not delivered:
+                    status = "reply_failed"
+                    await reply("I couldn’t send you a private connection link. Open LiteLLM Admin in Slack Apps and send connect in a DM.")
+                elif pending:
+                    await reply("Your account connection changed. The run stopped; inspect gateway state before retrying changes. I sent you a private link to reconnect.")
+                elif not private:
+                    await reply("I sent you a private link to connect your LiteLLM admin account. Once connected, mention me again here.")
             except (AccessDenied, AuthorizationUnavailable):
-                await client.chat_postMessage(channel=channel, thread_ts=thread,
-                    text="I couldn’t verify your Slack workspace membership. Please try again later.")
+                await reply("I couldn’t verify your Slack workspace membership. Please try again later.")
         except AgentBusy:
             status = "busy"
-            answer = "The agent is busy. No operation started for this request. Please send it again shortly."
-            if pending_ts:
-                await client.chat_update(channel=channel, ts=pending_ts, text=answer)
-            else:
-                await client.chat_postMessage(channel=channel, thread_ts=thread, text=answer)
+            await reply("The agent is busy. No operation started for this request. Please send it again shortly.")
         except (AccessDenied, AuthorizationUnavailable) as exc:
             status = "denied" if isinstance(exc, AccessDenied) else "authorization_unavailable"
             answer = ("Your LiteLLM admin session couldn’t be verified. Your Slack email must match an active LiteLLM proxy-admin account. Send connect to reconnect."
                       if isinstance(exc, AccessDenied) else "I can’t verify your admin access right now. Please try again later.")
-            if pending_ts:
+            if pending:
                 answer += " The run stopped; check any requested changes in the gateway before retrying."
-            try:
-                if pending_ts:
-                    await client.chat_update(channel=channel, ts=pending_ts, text=answer)
-                else:
-                    await client.chat_postMessage(channel=channel, thread_ts=thread, text=answer)
-            except Exception:
-                status = "reply_failed"
+            await reply(answer)
         except Exception as exc:
             logging.warning("Slack event %s failed (%s); event will not be replayed", event_id, type(exc).__name__)
             status = "reply_failed"
         finally:
-            journal.finish(event_id, status)
+            for identifier in event_ids:
+                journal.finish(identifier, status)
 
-    tasks = set()
-    async def handle(body, client):
-        task = asyncio.current_task()
-        tasks.add(task)
-        try:
-            await process(body, client)
-        finally:
-            tasks.discard(task)
-    handle.tasks = tasks
     return handle
 
 
@@ -163,12 +167,12 @@ async def main():
             available = await all_tools(session)
         print(json.dumps([{"name": t.name, "description": t.description} for t in available], indent=2))
         return
-    slack_app = AsyncApp(token=settings.bot_token) if slack_enabled else None
-    if slack_app:
-        identity = await slack_app.client.auth_test()
+    slack_client = AsyncWebClient(token=settings.bot_token) if slack_enabled else None
+    if slack_client and args.check:
+        identity = await slack_client.auth_test()
         if identity.get("team_id") != settings.workspace:
             raise ValueError("Slack bot token belongs to a different workspace")
-        await slack_app.client.users_info(user=identity["user_id"])
+        await slack_client.users_info(user=identity["user_id"])
     if args.check:
         print(f"Configuration verified; Slack enabled={slack_enabled}; {len(settings.tool_names)} tools configured. Run doctor.py for gateway compatibility checks.")
         return
@@ -176,20 +180,24 @@ async def main():
         authorizer = AdminAuthorizer(settings.gateway_url, settings.workspace, auth_client)
         journal = Journal(settings.db_path)
         connections = Connections(settings, ConnectionStore(journal.db, settings.encryption_key), authorizer,
-                                  slack_app.client, LiteLLMSSO(settings.gateway_url, settings.public_url, auth_client)) if slack_app else None
+                                  slack_client, LiteLLMSSO(settings.gateway_url, settings.public_url, auth_client)) if slack_client else None
         runner = AgentRunner(settings, journal)
-        listener = build_listener(settings, journal, authorizer=authorizer, connections=connections, runner=runner)
-        socket = None
-        if slack_app:
-            slack_app.event("message")(listener)
-            socket = AsyncSocketModeHandler(slack_app, settings.app_token)
+        slack = None
+        if slack_client:
+            slack = Slack(bot_token=settings.bot_token, app_token=settings.app_token,
+                          web_client=slack_client, workspace_id=settings.workspace,
+                          thread_subscriptions=SlackThreads(journal))
+            slack.bind(build_listener(settings, journal, slack_client, authorizer=authorizer,
+                                      connections=connections, runner=runner))
+        transport_task = None
+        stop_task = None
         server = None
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, stop.set)
         async def ready():
-            return runner.accepting and not stop.is_set() and (socket is None or await socket.client.is_connected())
+            return runner.accepting and not stop.is_set() and (slack is None or await slack.is_connected())
         try:
             if args.web:
                 from web import create_web_app
@@ -197,19 +205,22 @@ async def main():
                 server = web.AppRunner(web_app, access_log=None, shutdown_timeout=20)
                 await server.setup()
                 await web.TCPSite(server, "0.0.0.0", int(os.getenv("PORT", "10000"))).start()
-            if slack_enabled:
-                await socket.connect_async()
-            print(f"LiteLLM Admin ready; Slack enabled={slack_enabled}; proxy_admin access required.", flush=True)
-            await stop.wait()
+            stop_task = asyncio.create_task(stop.wait())
+            if slack:
+                transport_task = asyncio.create_task(slack.run())
+                done, _ = await asyncio.wait({transport_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+                if transport_task in done:
+                    await transport_task  # Fail startup if Socket Mode cannot connect.
+            else:
+                await stop_task
         finally:
             runner.accepting = False
-            if socket:
-                await socket.close_async()
-            if listener.tasks:
-                _, pending = await asyncio.wait(listener.tasks, timeout=20)
-                for task in pending:
+            if slack:
+                await slack.close()
+            for task in (transport_task, stop_task):
+                if task:
                     task.cancel()
-                await asyncio.gather(*pending, return_exceptions=True)
+            await asyncio.gather(*(t for t in (transport_task, stop_task) if t), return_exceptions=True)
             await runner.close()
             if server:
                 await server.cleanup()

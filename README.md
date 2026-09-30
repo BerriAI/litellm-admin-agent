@@ -1,6 +1,6 @@
 # LiteLLM Admin Agent
 
-Manage your LiteLLM gateway from a Slack DM, using the standalone
+Manage your LiteLLM gateway from Slack DMs and channel threads, using the standalone
 [LiteLLM Admin MCP](https://github.com/BerriAI/litellm-admin-mcp) connector.
 
 - Ask about models, keys, teams, budgets and spending.
@@ -120,6 +120,19 @@ allowlist and read-only settings also apply.
 - Return to Slack and ask: **“List my teams and their current budgets.”**
 - Check that a gateway admin can use the agent and that a regular gateway user cannot.
 - Send **disconnect** to remove your saved connection. To revoke the credential itself, revoke it in LiteLLM.
+
+Mention **@LiteLLM Admin** in any channel where the bot has been added. It replies
+in a thread; continue there without mentioning it again. DMs also retain context.
+Every request checks the sender's own connected account and current `proxy_admin`
+role. Different admins in one thread have separate credentials and model history.
+Ordinary channel answers are visible to channel participants. Sign-in links and
+generated keys are sent only to the requesting admin in a DM.
+
+Only a verified admin request starts thread tracking. After connecting from a
+channel prompt, mention the bot again. Threads are followed for seven days after
+the last verified admin message, up to 1,000 active threads. Tracked threads survive
+restarts; model conversation history clears on restart. Existing installations
+must [update and reinstall the Slack manifest](docs/operations.md#upgrade-slack-conversations).
 
 ## Optional read-only mode
 

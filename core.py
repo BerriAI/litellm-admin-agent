@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import sqlite3
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -27,26 +28,6 @@ class ToolOutcomeUnknown(RuntimeError):
     """A request may have reached the upstream service; never replay it automatically."""
 
 
-def authorized_event(body: dict, workspace: str, admins: frozenset[str]) -> bool:
-    return valid_dm_event(body, workspace) and body["event"]["user"] in admins
-
-
-def valid_dm_event(body: dict, workspace: str) -> bool:
-    event = body.get("event", {})
-    return bool(
-        body.get("team_id") == workspace
-        and isinstance(event.get("user"), str) and event["user"]
-        and event.get("channel_type") == "im"
-        and not event.get("bot_id")
-        and not event.get("subtype")
-        and isinstance(event.get("text"), str)
-        and event["text"].strip()
-        and event.get("channel")
-        and event.get("ts")
-        and body.get("event_id")
-    )
-
-
 class Journal:
     def __init__(self, path: str):
         if path != ":memory:":
@@ -63,6 +44,9 @@ class Journal:
             CREATE TABLE IF NOT EXISTS actions (
                 event_id TEXT NOT NULL, tool TEXT NOT NULL, status TEXT NOT NULL,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS slack_threads (
+                id TEXT PRIMARY KEY, updated_at REAL NOT NULL
             );
         """)
 
@@ -91,6 +75,27 @@ class Journal:
         # No request arguments, raw results, messages or credentials are written here.
         with self.db:
             self.db.execute("INSERT INTO actions(event_id,tool,status) VALUES(?,?,?)", (event_id, tool, status))
+
+
+class SlackThreads:
+    """Remember at most 1,000 accepted threads for seven days since last admin activity."""
+
+    def __init__(self, journal: Journal):
+        self.db = journal.db
+
+    async def contains(self, conversation_id: str) -> bool:
+        return self.db.execute(
+            "SELECT 1 FROM slack_threads WHERE id=? AND updated_at>?",
+            (conversation_id, time.time() - 7 * 86400),
+        ).fetchone() is not None
+
+    async def add(self, conversation_id: str) -> None:
+        now = time.time()
+        with self.db:
+            self.db.execute("INSERT OR REPLACE INTO slack_threads VALUES(?,?)", (conversation_id, now))
+            self.db.execute("DELETE FROM slack_threads WHERE updated_at<=?", (now - 7 * 86400,))
+            self.db.execute("DELETE FROM slack_threads WHERE id IN "
+                            "(SELECT id FROM slack_threads ORDER BY updated_at DESC LIMIT -1 OFFSET 1000)")
 
 
 _KEY_PATTERN = re.compile(r"\bsk-[A-Za-z0-9_-]{8,}")
