@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 
 import httpx2
@@ -46,6 +47,7 @@ def build_listener(settings: Settings, journal: Journal, client, model=None, con
             return
         private = message.metadata["channel_type"] == "im"
         pending = None
+        ran = False
         status = "failed"
 
         async def reply(answer):
@@ -93,10 +95,31 @@ def build_listener(settings: Settings, journal: Journal, client, model=None, con
                 await reply("Please keep each request under 16,000 characters.")
                 return
             await channel.subscribe(message)
-            pending = await channel.reply(message, "Working on your request…")
-            outcome = await runner.execute(message.text, principal,
+            history = None
+            text = message.text
+            if private:
+                pending = await channel.reply(message, "Working on your request…")
+            else:
+                try:
+                    async with asyncio.timeout(15):
+                        messages = await channel.thread_history(message, limit=30)
+                except Exception as exc:
+                    logging.warning("Slack thread history failed (%s)", type(exc).__name__)
+                    status = "context_unavailable"
+                    await reply("I couldn’t read this thread, so I haven’t run any operations. Try again, or start a new thread with the complete request.")
+                    return
+                history = [{"role": item.role, "content": f"<@{item.sender.id}>: " +
+                            re.sub(r"\bsk-[A-Za-z0-9_-]{8,}", "[key redacted]", item.text[:4000])}
+                           for item in messages]
+                text = f"<@{user}>: {message.text}"
+            outcome = await runner.execute(text, principal,
                 message.conversation_id + ":" + connection.version, event_id, verify, connection.credential,
-                extra_tools=(slack_user_tool(channel, settings.workspace, verify),))
+                extra_tools=(slack_user_tool(channel, settings.workspace, verify),),
+                history=history, check_reply=not private and bool(message.metadata["requires_subscription"]))
+            if outcome.status == "ignored":
+                status = "ignored"
+                return
+            ran = True
             # Revocation during a run must also stop private data delivery.
             await verify()
             parts = list(chunks(outcome.answer))
@@ -112,6 +135,8 @@ def build_listener(settings: Settings, journal: Journal, client, model=None, con
             status = outcome.status
         except ConnectionRequired:
             status = "connection_required"
+            if not private and message.metadata["requires_subscription"] and not ran:
+                return
             try:
                 link = await connections.link(user)
                 delivered = await send_private(f"Connect your own LiteLLM admin account here: <{link}|Connect account>\n"
@@ -120,7 +145,7 @@ def build_listener(settings: Settings, journal: Journal, client, model=None, con
                 if not delivered:
                     status = "reply_failed"
                     await reply("I couldn’t send you a private connection link. Open LiteLLM Admin in Slack Apps and send connect in a DM.")
-                elif pending:
+                elif pending or ran:
                     await reply("Your account connection changed. The run stopped; inspect gateway state before retrying changes. I sent you a private link to reconnect.")
                 elif not private:
                     await reply("I sent you a private link to connect your LiteLLM admin account. Once connected, mention me again here.")
@@ -131,9 +156,11 @@ def build_listener(settings: Settings, journal: Journal, client, model=None, con
             await reply("The agent is busy. No operation started for this request. Please send it again shortly.")
         except (AccessDenied, AuthorizationUnavailable) as exc:
             status = "denied" if isinstance(exc, AccessDenied) else "authorization_unavailable"
+            if not private and message.metadata["requires_subscription"] and not ran:
+                return
             answer = ("Your LiteLLM admin session couldn’t be verified. Your Slack email must match an active LiteLLM proxy-admin account. Send connect to reconnect."
                       if isinstance(exc, AccessDenied) else "I can’t verify your admin access right now. Please try again later.")
-            if pending:
+            if pending or ran:
                 answer += " The run stopped; check any requested changes in the gateway before retrying."
             await reply(answer)
         except Exception as exc:

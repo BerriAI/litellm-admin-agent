@@ -57,7 +57,9 @@ async def test_thread_and_replay_records_survive_restart_including_old_event_ids
     journal.db.close()
 
     journal = Journal(path)
-    transport = channel(client, journal, ScriptedModel(), connect,
+    restarted_model = ScriptedModel()
+    restarted_model.index = 2
+    transport = channel(client, journal, restarted_model, connect,
                         authorizer=FakeAuthorizer(), connections=FakeConnections())
     duplicate = mention()
     duplicate.update(event_id="second-event-for-same-message")
@@ -68,13 +70,15 @@ async def test_thread_and_replay_records_survive_restart_including_old_event_ids
     # A failed multi-ID claim must roll back all new IDs.
     assert journal.db.execute("SELECT 1 FROM events WHERE id='second-event-for-same-message'").fetchone() is None
     await transport.handle_event(followup())
-    assert len(mcp.calls) == 2  # The new process receives untagged replies.
-    assert client.posts[-2]["thread_ts"] == "1.1"
+    assert len(mcp.calls) == 1
+    assert "Create a team key" in json.dumps(restarted_model.inputs[-1])
+    assert "Created a key" in json.dumps(restarted_model.inputs[-1])
+    assert client.posts[-1]["thread_ts"] == "1.1"
     journal.db.close()
 
 
 @pytest.mark.asyncio
-async def test_each_admin_uses_their_own_credential_and_history_in_a_shared_thread():
+async def test_admins_share_visible_thread_context_but_keep_their_own_credentials():
     class Connections:
         version = "one"
         def get(self, user): return Connection(user, self.version, user + "-credential")
@@ -94,19 +98,20 @@ async def test_each_admin_uses_their_own_credential_and_history_in_a_shared_thre
                         authorizer=Authorizer(), connections=connections)
     await transport.handle_event(mention(text="Alice context"))
     await transport.handle_event(followup("2.2", user="Ubob", text="Bob context"))
-    assert model.inputs[-1] == [{"role": "user", "content": "Bob context"}]
+    assert "Alice context" in json.dumps(model.inputs[-1])
+    assert model.inputs[-1][-1] == {"role": "user", "content": "<@Ubob>: Bob context"}
     await transport.handle_event(followup("3.3", text="My follow-up"))
-    assert model.inputs[-1][0]["content"] == "Alice context"
-    assert "Bob context" not in json.dumps(model.inputs[-1])
+    assert model.inputs[-1][0]["content"] == "<@Uadmin>: <@BOT> Alice context"
+    assert "Bob context" in json.dumps(model.inputs[-1])
     before = len(model.inputs)
     await transport.handle_event(followup("4.4", user="Uregular"))
     assert len(model.inputs) == before
-    # Another thread and a replacement connection each start with fresh context.
+    # Another thread is isolated; reconnecting preserves visible Slack context.
     await transport.handle_event(mention("5.5", text="Other thread"))
     assert len(model.inputs[-1]) == 1
     connections.version = "two"
     await transport.handle_event(followup("6.6", text="After reconnect"))
-    assert len(model.inputs[-1]) == 1
+    assert "Bob context" in json.dumps(model.inputs[-1])
     assert credentials == ["Uadmin-credential", "Ubob-credential", "Uadmin-credential",
                            "Uadmin-credential", "Uadmin-credential"]
 
@@ -160,7 +165,7 @@ async def test_revocation_after_key_creation_stops_private_delivery():
     await transport.handle_event(mention())
     assert len(mcp.calls) == 1
     assert "sk-created" not in json.dumps(client.posts + client.updates)
-    assert "run stopped" in client.updates[-1]["text"]
+    assert "couldn’t be verified" in client.posts[-1]["text"]
     before = len(model.inputs)
     await transport.handle_event(followup())
     assert len(model.inputs) == before
@@ -207,3 +212,43 @@ async def test_failed_private_delivery_is_reported_without_leaking_or_repeating_
     assert journal.db.execute("SELECT DISTINCT status FROM events").fetchall() == [("reply_failed",)]
     await transport.handle_event(mention())
     assert len(mcp.calls) == (0 if needs_connection else 1)
+
+
+@pytest.mark.asyncio
+async def test_side_conversation_is_routed_without_tools_or_a_slack_reply():
+    from agents import ModelResponse
+    from agents.usage import Usage
+    from openai.types.responses import ResponseOutputMessage, ResponseOutputText
+
+    class RoutingModel(ScriptedModel):
+        async def get_response(self, input, tools, output_schema, **kwargs):
+            assert output_schema is not None and tools == []
+            assert 'Create a team key' in json.dumps(input)
+            return ModelResponse(output=[ResponseOutputMessage(type='message', id='routing',
+                role='assistant', status='completed', content=[ResponseOutputText(type='output_text',
+                text='{"reply":false}', annotations=[])])], usage=Usage(), response_id='routing')
+
+    @asynccontextmanager
+    async def forbidden_connect(*args):
+        raise AssertionError('Side conversation reached admin tools')
+        yield
+
+    journal, client = Journal(':memory:'), FakeSlack()
+    client.messages.append(mention()['event'])
+    await SlackThreads(journal).add('slack:Tberri:Cchannel:1.1')
+    transport = channel(client, journal, RoutingModel(), forbidden_connect,
+                        authorizer=FakeAuthorizer(), connections=FakeConnections())
+    await transport.handle_event(followup(text='which model is this <@UTin>?'))
+    assert client.posts == [] and client.updates == []
+    assert journal.db.execute('SELECT DISTINCT status FROM events').fetchall() == [('ignored',)]
+
+
+@pytest.mark.asyncio
+async def test_history_failure_does_not_run_operations_without_context():
+    class Unavailable(FakeSlack):
+        async def conversations_replies(self, **kwargs): raise TimeoutError()
+    journal, client, model = Journal(':memory:'), Unavailable(), ScriptedModel()
+    await SlackThreads(journal).add('slack:Tberri:Cchannel:1.1')
+    transport = channel(client, journal, model, authorizer=FakeAuthorizer(), connections=FakeConnections())
+    await transport.handle_event(followup(text='target@example.com'))
+    assert not model.inputs and 'haven’t run any operations' in client.posts[-1]['text']

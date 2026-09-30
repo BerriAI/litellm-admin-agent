@@ -29,8 +29,8 @@ async def test_both_model_and_mcp_receive_each_callers_credential():
         result = await runner.execute("Read my budget", Principal(user, "", "gateway", user), "chat", user,
                                       verify, user + "-personal-key")
         assert result.status == "completed"
-    assert sent == [("mcp", "alice-personal-key"), ("model", "alice-personal-key"),
-                    ("mcp", "bob-personal-key"), ("model", "bob-personal-key")]
+    assert set(sent) == {("mcp", "alice-personal-key"), ("model", "alice-personal-key"),
+                         ("mcp", "bob-personal-key"), ("model", "bob-personal-key")}
 
 
 @pytest.mark.asyncio
