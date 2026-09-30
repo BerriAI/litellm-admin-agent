@@ -21,7 +21,7 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from agent import Settings, mcp_session
 from auth import AccessDenied, AdminAuthorizer, AuthorizationUnavailable
-from core import Journal, SlackThreads, all_tools
+from core import Journal, SlackThreads, all_tools, reply_text
 from connections import ConnectionRequired, ConnectionStore, Connections
 from engine import AgentBusy, AgentRunner
 from sso import LiteLLMSSO
@@ -111,7 +111,9 @@ def build_listener(settings: Settings, journal: Journal, client, model=None, con
                     await reply("I couldn’t read this thread, so I haven’t run any operations. Try again, or start a new thread with the complete request.")
                     return
                 messages = tuple(replace(item, text=re.sub(
-                    r"\bsk-[A-Za-z0-9_-]{8,}", "[key redacted]", item.text[:4000])) for item in messages)
+                    r"\bsk-[A-Za-z0-9_-]{8,}", "[key redacted]",
+                    (reply_text(item.text) if item.role == "assistant" else item.text)[:4000]))
+                    for item in messages)
                 inputs = to_openai_input((*messages, message), include_senders=True)
                 history, text = inputs[:-1], inputs[-1]["content"]
             outcome = await runner.execute(text, principal,

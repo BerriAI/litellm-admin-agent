@@ -6,7 +6,7 @@ import pytest
 
 from auth import AccessDenied, Principal
 from connections import Connection, ConnectionRequired
-from core import Journal, SlackThreads
+from core import Journal, SlackThreads, reply_text
 from test_agent import FakeAuthorizer, FakeConnections, FakeMCP, FakeSlack, ScriptedModel, channel, event
 
 
@@ -40,6 +40,55 @@ async def test_thread_conversation_keeps_context_but_sends_keys_only_to_requeste
     assert all(p["thread_ts"] == "1.1" for p in client.posts if p["channel"] == "Cchannel")
     keys = [p for p in client.posts if "sk-created" in p["text"]]
     assert len(keys) == 1 and keys[0]["channel"] == "Uadmin"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel_type", ["im", "channel"])
+async def test_echoed_speaker_envelope_posts_readable_text_and_keeps_keys_private(channel_type):
+    text = "Done — created a key for <@Utarget>.\n\n*Budget:* $20\n*Key:* sk-leaked123456789\n\nSent privately."
+    envelope = json.dumps({"sender_id": "BOT", "text": text})
+    expected = text.replace("sk-leaked123456789", "[key redacted]")
+
+    class EnvelopeModel(ScriptedModel):
+        async def get_response(self, *args, **kwargs):
+            result = await super().get_response(*args, **kwargs)
+            if kwargs.get("output_schema") is None and result.output[0].type == "message":
+                result.output[0].content[0].text = envelope
+            return result
+
+    client, model, mcp = FakeSlack(), EnvelopeModel(), FakeMCP()
+    @asynccontextmanager
+    async def connect(config, credential): yield mcp
+    transport = channel(client, Journal(":memory:"), model, connect,
+                        authorizer=FakeAuthorizer(), connections=FakeConnections())
+    await transport.handle_event(event() if channel_type == "im" else mention())
+    public_channel = "Dprivate" if channel_type == "im" else "Cchannel"
+    answers = [p for p in client.posts + client.updates if p["channel"] == public_channel]
+    assert answers[-1]["text"] == expected
+    assert "sender_id" not in answers[-1]["text"] and "\\n" not in answers[-1]["text"]
+    keys = [p for p in client.posts if "sk-created" in p["text"]]
+    assert len(keys) == 1 and keys[0]["channel"] == "Uadmin"
+
+    # Already-posted envelopes must not teach the next turn to output JSON again.
+    if channel_type == "channel":
+        for posted in client.messages:
+            if posted.get("user") == "BOT" and posted.get("channel") == "Cchannel":
+                posted["text"] = envelope
+        await transport.handle_event(followup(text="Where is the key?"))
+        assistants = [item["content"] for item in model.inputs[-1] if item.get("role") == "assistant"]
+        assert expected in assistants and envelope not in assistants
+        assert len(mcp.calls) == 1
+
+
+@pytest.mark.parametrize("text", [
+    'Use `C:\\new` and write the literal `\\n`.',
+    '{"text": "example\\nvalue"}',
+    '{"sender_id": "example", "text": "value", "extra": true}',
+    '{"sender_id": "example", "text": 123}',
+    '```json\n{"sender_id": "example", "text": "value"}\n```',
+])
+def test_reply_text_preserves_code_and_unrelated_json(text):
+    assert reply_text(text) == text
 
 
 @pytest.mark.asyncio
@@ -99,9 +148,9 @@ async def test_admins_share_visible_thread_context_but_keep_their_own_credential
     await transport.handle_event(mention(text="Alice context"))
     await transport.handle_event(followup("2.2", user="Ubob", text="Bob context"))
     assert "Alice context" in json.dumps(model.inputs[-1])
-    assert json.loads(model.inputs[-1][-1]["content"]) == {"sender_id": "Ubob", "text": "Bob context"}
+    assert model.inputs[-1][-1]["content"] == 'Speaker: "Ubob"\n\nBob context'
     await transport.handle_event(followup("3.3", text="My follow-up"))
-    assert json.loads(model.inputs[-1][0]["content"]) == {"sender_id": "Uadmin", "text": "<@BOT> Alice context"}
+    assert model.inputs[-1][0]["content"] == 'Speaker: "Uadmin"\n\n<@BOT> Alice context'
     assert "Bob context" in json.dumps(model.inputs[-1])
     before = len(model.inputs)
     await transport.handle_event(followup("4.4", user="Uregular"))

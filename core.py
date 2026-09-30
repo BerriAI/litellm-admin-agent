@@ -24,6 +24,18 @@ def is_read_only(name: str) -> bool:
     return bool(operation and operation.read_only)
 
 
+def reply_text(text: str) -> str:
+    """Recover an echoed legacy speaker envelope, leaving other JSON and code intact."""
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return text
+    if (isinstance(value, dict) and value.keys() == {"sender_id", "text"}
+            and isinstance(value["sender_id"], str) and isinstance(value["text"], str)):
+        return value["text"]
+    return text
+
+
 class ToolOutcomeUnknown(RuntimeError):
     """A request may have reached the upstream service; never replay it automatically."""
 

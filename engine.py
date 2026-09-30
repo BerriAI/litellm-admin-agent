@@ -13,7 +13,7 @@ from agentchat.integrations import should_reply
 
 from agent import Settings, agent_for, mcp_session, model_session
 from auth import Principal
-from core import Journal, ToolBridge, all_tools
+from core import Journal, ToolBridge, all_tools, reply_text
 
 
 @dataclass
@@ -112,7 +112,10 @@ class AgentRunner:
                             agent, input=inputs, max_turns=16,
                             run_config=RunConfig(tracing_disabled=True, trace_include_sensitive_data=False),
                         )
-                        answer = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}", "[key redacted]", str(result.final_output)).strip()
+                        answer = str(result.final_output)
+                        if principal.source == "slack":
+                            answer = reply_text(answer)
+                        answer = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}", "[key redacted]", answer).strip()
                         if not answer:
                             raise RuntimeError("Empty agent answer")
                         if history_override is None:
