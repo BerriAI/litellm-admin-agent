@@ -201,7 +201,7 @@ async def test_failed_private_delivery_is_reported_without_leaking_or_repeating_
                         authorizer=FakeAuthorizer(), connections=Connections())
     await transport.handle_event(mention())
     assert len(mcp.calls) == (0 if needs_connection else 1)
-    replies = json.dumps(client.posts + client.updates)
+    replies = json.dumps(client.posts + client.updates, ensure_ascii=False)
     assert "sk-created" not in replies and "private-token" not in replies
     assert "couldn’t" in replies
     assert journal.db.execute("SELECT DISTINCT status FROM events").fetchall() == [("reply_failed",)]
