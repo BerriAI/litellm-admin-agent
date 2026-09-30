@@ -1,5 +1,6 @@
 import copy
 import json
+from decimal import Decimal
 from contextlib import asynccontextmanager
 
 import pytest
@@ -45,18 +46,35 @@ class FakeMCP:
 
 
 class FakeSlack:
-    def __init__(self): self.posts = []; self.updates = []; self.reactions = []
+    def __init__(self):
+        self.posts = []; self.updates = []; self.reactions = []; self.messages = []
+        self.current_event = {}
     async def reactions_add(self, **kwargs): self.reactions.append(kwargs)
     async def chat_postMessage(self, **kwargs):
         self.posts.append(kwargs)
-        return {"ts": f"reply.{len(self.posts)}"}
-    async def chat_update(self, **kwargs): self.updates.append(kwargs)
+        ts = str(Decimal(self.current_event.get("ts", "1")) + Decimal(len(self.posts)) / 1000000)
+        self.messages.append({**kwargs, "ts": ts, "user": "BOT"})
+        return {"ts": ts}
+    async def chat_update(self, **kwargs):
+        self.updates.append(kwargs)
+        for message in self.messages:
+            if message["ts"] == kwargs["ts"]: message["text"] = kwargs["text"]
+    async def conversations_replies(self, *, channel, ts, latest, **kwargs):
+        return {"ok": True, "messages": sorted([
+            m for m in self.messages if m.get("channel") == channel
+            and (m["ts"] == ts or m.get("thread_ts") == ts)
+            and Decimal(m["ts"]) < Decimal(latest)
+        ], key=lambda m: Decimal(m["ts"])), "has_more": False}
 
 
 class ScriptedModel(Model):
     """Exercise the real Agents SDK loop with deterministic model responses."""
     def __init__(self): self.inputs = []; self.index = 0
     async def get_response(self, system_instructions, input, model_settings, tools, output_schema, handoffs, tracing, **kwargs):
+        if output_schema is not None:
+            return ModelResponse(output=[ResponseOutputMessage(type="message", id="route", role="assistant",
+                status="completed", content=[ResponseOutputText(type="output_text", text='{"reply":true}', annotations=[])])],
+                usage=Usage(), response_id="route")
         self.inputs.append(copy.deepcopy(input)); self.index += 1
         if self.index == 1:
             output = [ResponseFunctionToolCall(type="function_call", id="fc1", call_id="c1", name="find_admin_tools", arguments=json.dumps({"query": "create key team"}))]
@@ -88,7 +106,13 @@ def settings():
 
 
 def channel(client, journal, model=None, connect=None, **kwargs):
-    transport = Slack(bot_token="test", app_token="test", web_client=client,
+    class RecordingSlack(Slack):
+        async def handle_event(self, payload):
+            client.current_event = payload["event"]
+            if not any(m["ts"] == payload["event"]["ts"] for m in client.messages):
+                client.messages.append(dict(payload["event"]))
+            await super().handle_event(payload)
+    transport = RecordingSlack(bot_token="test", app_token="test", web_client=client,
                       workspace_id="Tberri", bot_user_id="BOT", thread_subscriptions=SlackThreads(journal))
     options = {"model": model, **kwargs}
     if connect is not None:

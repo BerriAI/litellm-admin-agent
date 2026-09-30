@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from typing import Awaitable, Callable
 
 from agents import FunctionTool, Runner, RunConfig
+from agentchat.integrations import should_reply
 
 from agent import Settings, agent_for, mcp_session, model_session
 from auth import Principal
@@ -49,7 +50,8 @@ class AgentRunner:
 
     async def execute(self, text: str, principal: Principal, context: str, event_id: str,
                       verify: Callable[[], Awaitable[None]], credential: str,
-                      *, extra_tools: tuple[FunctionTool, ...] = ()) -> Outcome:
+                      *, extra_tools: tuple[FunctionTool, ...] = (),
+                      history: list[dict] | None = None, check_reply: bool = False) -> Outcome:
         if not self.accepting or self.pending >= self.settings.max_pending_requests:
             raise AgentBusy()
         task = asyncio.current_task()
@@ -61,7 +63,8 @@ class AgentRunner:
             except TimeoutError:
                 raise AgentBusy() from None
             try:
-                return await self._execute(text, principal, context, event_id, verify, credential, extra_tools)
+                return await self._execute(text, principal, context, event_id, verify, credential,
+                                           extra_tools, history, check_reply)
             finally:
                 self.lock.release()
         finally:
@@ -76,37 +79,47 @@ class AgentRunner:
                 task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
 
-    async def _execute(self, text, principal, context, event_id, verify, credential, extra_tools) -> Outcome:
+    async def _execute(self, text, principal, context, event_id, verify, credential,
+                       extra_tools, history_override, check_reply) -> Outcome:
         identity = (principal.actor, context)
         bridge = None
         stage = "authorization"
         try:
             async with asyncio.timeout(self.settings.run_timeout_seconds):
-                history = self.conversations.get(identity, [])
+                history = self.conversations.get(identity, []) if history_override is None else history_override
+                inputs = history + [{"role": "user", "content": text}]
                 await verify()
-                stage = "tool_connection"
-                async with self.connect(self.settings, credential) as session, self._model(credential) as model:
-                    stage = "tool_discovery"
-                    bridge = ToolBridge(await all_tools(session), self.settings.tool_names, session.call_tool,
-                                        self.journal, event_id, ensure_authorized=verify, read_only=self.settings.read_only)
-                    stage = "agent_run"
-                    agent = agent_for(bridge, model, extra_tools=extra_tools)
-                    if self.settings.read_only:
-                        agent.instructions += "\nThis deployment is read-only. Explain that changes require the operator to enable writes."
-                    agent.instructions += "\nAuthenticated requesting LiteLLM user: " + principal.user_id
-                    result = await Runner.run(
-                        agent, input=history + [{"role": "user", "content": text}], max_turns=16,
-                        run_config=RunConfig(tracing_disabled=True, trace_include_sensitive_data=False),
-                    )
-                    answer = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}", "[key redacted]", str(result.final_output)).strip()
-                    if not answer:
-                        raise RuntimeError("Empty agent answer")
-                    self.conversations[identity] = (history + [
-                        {"role": "user", "content": text}, {"role": "assistant", "content": answer},
-                    ])[-20:]
-                    if len(self.conversations) > 100:
-                        self.conversations.pop(next(iter(self.conversations)))
-                    return Outcome(answer, dict(bridge.secrets.keys), "completed")
+                async with self._model(credential) as model:
+                    if check_reply:
+                        stage = "thread_routing"
+                        if not await should_reply(inputs, model=model):
+                            return Outcome("", {}, "ignored")
+                    await verify()
+                    stage = "tool_connection"
+                    async with self.connect(self.settings, credential) as session:
+                        stage = "tool_discovery"
+                        bridge = ToolBridge(await all_tools(session), self.settings.tool_names, session.call_tool,
+                                            self.journal, event_id, ensure_authorized=verify, read_only=self.settings.read_only)
+                        stage = "agent_run"
+                        agent = agent_for(bridge, model, extra_tools=extra_tools)
+                        if self.settings.read_only:
+                            agent.instructions += "\nThis deployment is read-only. Explain that changes require the operator to enable writes."
+                        agent.instructions += "\nAuthenticated requesting LiteLLM user: " + principal.user_id
+                        agent.instructions += "\nConfigured assistant model: " + self.settings.model
+                        if principal.source == "slack":
+                            agent.instructions += "\nCurrent requesting Slack user (private key recipient): <@" + principal.external_id + ">"
+                        result = await Runner.run(
+                            agent, input=inputs, max_turns=16,
+                            run_config=RunConfig(tracing_disabled=True, trace_include_sensitive_data=False),
+                        )
+                        answer = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}", "[key redacted]", str(result.final_output)).strip()
+                        if not answer:
+                            raise RuntimeError("Empty agent answer")
+                        if history_override is None:
+                            self.conversations[identity] = (inputs + [{"role": "assistant", "content": answer}])[-20:]
+                            if len(self.conversations) > 100:
+                                self.conversations.pop(next(iter(self.conversations)))
+                        return Outcome(answer, dict(bridge.secrets.keys), "completed")
         except Exception as exc:
             logging.warning("Agent run %s failed stage=%s errors=%s", event_id, stage, error_types(exc))
             if bridge and bridge.mutation_attempted:
