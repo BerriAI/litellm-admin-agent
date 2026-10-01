@@ -99,6 +99,9 @@ class FakeConnections:
     def get(self, user):
         return Connection("admin@example.com", "connection-1", "caller-key")
 
+    async def acquire(self, user, **kwargs):
+        return self.get(user)
+
 
 def settings():
     return Settings("Tberri", "",

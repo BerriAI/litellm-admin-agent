@@ -1,5 +1,7 @@
 from contextlib import asynccontextmanager
 from dataclasses import replace
+import asyncio
+import time
 
 import pytest
 import httpx2
@@ -31,6 +33,85 @@ async def test_both_model_and_mcp_receive_each_callers_credential():
         assert result.status == "completed"
     assert set(sent) == {("mcp", "alice-personal-key"), ("model", "alice-personal-key"),
                          ("mcp", "bob-personal-key"), ("model", "bob-personal-key")}
+
+
+@pytest.mark.asyncio
+async def test_queued_run_renews_after_admission_and_uses_one_bearer_everywhere():
+    sent = []
+    prepared = asyncio.Event()
+    @asynccontextmanager
+    async def mcp(config, credential):
+        sent.append(("mcp", credential))
+        yield FakeMCP()
+    @asynccontextmanager
+    async def model(config, credential):
+        sent.append(("model", credential))
+        yield ScriptedModel()
+    async def verify(): pass
+    async def prepare():
+        prepared.set()
+        return "renewed-personal-token", time.time() + 300
+    runner = AgentRunner(settings(), Journal(":memory:"), connect=mcp, make_model=model)
+    await runner.lock.acquire()
+    task = asyncio.create_task(runner.execute("Read my budget", Principal("alice", "", "gateway", "alice"),
+        "chat", "queued", verify, "expired-in-queue", prepare=prepare))
+    await asyncio.sleep(0)
+    assert not prepared.is_set() and not sent
+    runner.lock.release()
+    assert (await task).status == "completed"
+    assert sent == [("model", "renewed-personal-token"), ("mcp", "renewed-personal-token")]
+
+
+@pytest.mark.asyncio
+async def test_expiring_access_caps_run_and_releases_admission_without_replaying():
+    calls = []
+    cancelled = asyncio.Event()
+    @asynccontextmanager
+    async def model(config, credential):
+        calls.append(credential)
+        try:
+            await asyncio.Event().wait()
+            yield ScriptedModel()
+        finally:
+            cancelled.set()
+    async def verify(): pass
+    async def prepare(): return "short-lived-token", time.time() + 15.05
+    runner = AgentRunner(settings(), Journal(":memory:"), make_model=model)
+    outcome = await asyncio.wait_for(runner.execute("Read budget", Principal("alice", "", "gateway", "alice"),
+        "chat", "expiring", verify, "old", prepare=prepare), timeout=1)
+    assert outcome.status == "failed" and cancelled.is_set()
+    assert calls == ["short-lived-token"] and not runner.lock.locked() and runner.pending == 0
+
+
+@pytest.mark.asyncio
+async def test_slack_refresh_keeps_identity_and_updates_both_consumers():
+    from test_agent import FakeAuthorizer, FakeConnections, FakeSlack, channel, event
+    sent, verified = [], []
+    class Connections(FakeConnections):
+        count = 0
+        def get(self, user):
+            return replace(super().get(user), credential="new" if self.count > 1 else "old")
+        async def acquire(self, user, **kwargs):
+            self.count += 1
+            return self.get(user)
+    class Authorizer(FakeAuthorizer):
+        async def require_slack_admin(self, user, client, bearer):
+            verified.append(bearer)
+            return await super().require_slack_admin(user, client, bearer)
+    @asynccontextmanager
+    async def mcp(config, credential):
+        sent.append(("mcp", credential))
+        yield FakeMCP()
+    @asynccontextmanager
+    async def model(config, credential):
+        sent.append(("model", credential))
+        yield ScriptedModel()
+    journal = Journal(":memory:")
+    runner = AgentRunner(settings(), journal, connect=mcp, make_model=model)
+    await channel(FakeSlack(), journal, authorizer=Authorizer(), connections=Connections(),
+                  runner=runner).handle_event(event())
+    assert sent == [("model", "new"), ("mcp", "new")]
+    assert verified[0] == "old" and set(verified[1:]) == {"new"}
 
 
 @pytest.mark.asyncio

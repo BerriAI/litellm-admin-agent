@@ -16,7 +16,7 @@ from aiohttp import web
 from cryptography.fernet import Fernet, InvalidToken
 
 from auth import AccessDenied, AuthorizationUnavailable
-from sso import OAuthFlow, SignInExpired
+from sso import GatewayIncompatible, OAuthFlow, SignInExpired, SignInResult
 
 
 class ConnectionRequired(Exception):
@@ -29,6 +29,8 @@ class Connection:
     version: str
     credential: str = field(repr=False)
     expires_at: float | None = None
+    generation: int = 0
+    oauth: SignInResult | None = field(default=None, repr=False)
 
 
 def digest(value: str) -> str:
@@ -49,6 +51,9 @@ class ConnectionStore:
             );
             CREATE TABLE IF NOT EXISTS connection_sso (
                 token_hash TEXT PRIMARY KEY, encrypted BLOB NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS connection_revocations (
+                token_hash TEXT PRIMARY KEY, owner TEXT NOT NULL, encrypted BLOB NOT NULL
             );
         """)
 
@@ -76,14 +81,106 @@ class ConnectionStore:
             raise ConnectionRequired()
         return row[0]
 
-    def save(self, owner: str, user_id: str, credential: str, expires_at=None) -> None:
+    def save(self, owner: str, user_id: str, credential: str, expires_at=None, *, oauth=None) -> None:
         with self.db:
-            self._save(owner, user_id, credential, expires_at)
+            self._save(owner, user_id, credential, expires_at, oauth=oauth)
 
-    def _save(self, owner: str, user_id: str, credential: str, expires_at=None) -> None:
-        payload = {"owner": owner, "user_id": user_id, "version": secrets.token_urlsafe(24), "credential": credential, "expires_at": expires_at}
+    def _save(self, owner: str, user_id: str, credential: str, expires_at=None, *, oauth=None) -> None:
+        try:
+            self._queue(owner, self.read(owner).oauth)
+        except ConnectionRequired:
+            pass
+        self._write({"owner": owner, "user_id": user_id, "version": secrets.token_urlsafe(24),
+                     "credential": credential, "expires_at": expires_at, "generation": 0, "state": "ready",
+                     "oauth": asdict(oauth) if oauth else None})
+
+    def _write(self, payload):
         encrypted = self.cipher.encrypt(json.dumps(payload).encode())
-        self.db.execute("INSERT OR REPLACE INTO connections VALUES(?,?)", (owner, encrypted))
+        self.db.execute("INSERT OR REPLACE INTO connections VALUES(?,?)", (payload["owner"], encrypted))
+
+    def _load(self, owner):
+        row = self.db.execute("SELECT encrypted FROM connections WHERE owner=?", (owner,)).fetchone()
+        if not row:
+            raise ConnectionRequired()
+        try:
+            data = json.loads(self.cipher.decrypt(row[0]))
+            if data["owner"] != owner:
+                raise ValueError()
+            return data
+        except (InvalidToken, ValueError, KeyError, TypeError):
+            raise ConnectionRequired() from None
+
+    def read(self, owner: str) -> Connection:
+        """Read even expired access material, so only the connection owner can renew it."""
+        try:
+            data = self._load(owner)
+            oauth = SignInResult(**data["oauth"]) if data.get("oauth") else None
+            return Connection(data["user_id"], data["version"], data["credential"], data.get("expires_at"),
+                              data.get("generation", 0), oauth)
+        except (ValueError, KeyError, TypeError):
+            raise ConnectionRequired() from None
+
+    def _queue(self, owner, session, *, after=0):
+        if session and session.refresh_token:
+            payload = {"owner": owner, "session": asdict(session), "after": after}
+            self.db.execute("INSERT OR REPLACE INTO connection_revocations VALUES(?,?,?)",
+                            (digest(session.refresh_token), owner, self.cipher.encrypt(json.dumps(payload).encode())))
+
+    def queue_revocation(self, owner, session, *, after=0):
+        with self.db:
+            self._queue(owner, session, after=after)
+
+    def revocations(self, owner=None):
+        rows = self.db.execute("SELECT token_hash,owner,encrypted FROM connection_revocations "
+                               "WHERE (? IS NULL OR owner=?) LIMIT 16", (owner, owner)).fetchall()
+        for token_hash, recorded_owner, encrypted in rows:
+            try:
+                payload = json.loads(self.cipher.decrypt(encrypted))
+                session = SignInResult(**payload["session"])
+                if payload["owner"] != recorded_owner or digest(session.refresh_token) != token_hash:
+                    raise ValueError()
+                if payload.get("after", 0) <= time.time():
+                    yield token_hash, session
+            except (InvalidToken, ValueError, KeyError, TypeError):
+                raise ConnectionRequired() from None
+
+    def has_revocations(self, owner=None):
+        return self.db.execute("SELECT 1 FROM connection_revocations WHERE (? IS NULL OR owner=?) LIMIT 1",
+                               (owner, owner)).fetchone() is not None
+
+    def complete_revocation(self, token_hash):
+        with self.db:
+            self.db.execute("DELETE FROM connection_revocations WHERE token_hash=?", (token_hash,))
+
+    def begin_refresh(self, owner, connection):
+        with self.db:
+            data = self._load(owner)
+            if (data.get("state", "ready") != "ready" or data["version"] != connection.version
+                    or data.get("generation", 0) != connection.generation):
+                raise ConnectionRequired()
+            data["state"] = "refreshing"
+            self._write(data)
+
+    def finish_refresh(self, owner, connection, session):
+        with self.db:
+            data = self._load(owner)
+            if (data.get("state") != "refreshing" or data["version"] != connection.version
+                    or data.get("generation", 0) != connection.generation):
+                raise ConnectionRequired()
+            data.update(state="ready", credential=session.credential, expires_at=session.expires_at,
+                        oauth=asdict(session), generation=connection.generation + 1)
+            self._write(data)
+
+    def invalidate(self, owner, connection):
+        with self.db:
+            self._queue(owner, connection.oauth)
+            # Late refresh results cannot disconnect a newer login.
+            try:
+                current = self.read(owner)
+            except ConnectionRequired:
+                return
+            if current.version == connection.version:
+                self.db.execute("DELETE FROM connections WHERE owner=?", (owner,))
 
     def pending(self, token: str) -> dict | None:
         owner = self.owner(token)
@@ -108,33 +205,31 @@ class ConnectionStore:
         with self.db:
             self.db.execute("INSERT OR REPLACE INTO connection_sso VALUES(?,?)", (digest(token), encrypted))
 
-    def finish(self, token: str, owner: str, user_id: str, credential: str, expires_at=None):
+    def finish(self, token: str, owner: str, user_id: str, credential: str, expires_at=None, *, oauth=None):
         # No await between the final link check and transaction: disconnect or
         # a newer connect link must invalidate an in-flight login as well.
         if self.owner(token) != owner:
             raise ConnectionRequired()
         with self.db:
-            self._save(owner, user_id, credential, expires_at)
+            self._save(owner, user_id, credential, expires_at, oauth=oauth)
+            if oauth:
+                self.db.execute("DELETE FROM connection_revocations WHERE token_hash=?", (digest(oauth.refresh_token),))
             self.db.execute("DELETE FROM connection_links WHERE token_hash=?", (digest(token),))
             self.db.execute("DELETE FROM connection_sso WHERE token_hash=?", (digest(token),))
 
     def get(self, owner: str) -> Connection:
-        row = self.db.execute("SELECT encrypted FROM connections WHERE owner=?", (owner,)).fetchone()
-        if not row:
+        connection = self.read(owner)
+        if (self._load(owner).get("state", "ready") not in {"ready", "refreshing"}
+                or (connection.expires_at is not None and connection.expires_at <= time.time())):
             raise ConnectionRequired()
-        try:
-            data = json.loads(self.cipher.decrypt(row[0]))
-            if data["owner"] != owner:
-                raise ValueError()
-            expires = data.get("expires_at")
-            if expires is not None and expires <= time.time():
-                raise ConnectionRequired()
-            return Connection(data["user_id"], data["version"], data["credential"], expires)
-        except (InvalidToken, ValueError, KeyError, TypeError):
-            raise ConnectionRequired() from None
+        return connection
 
     def disconnect(self, owner: str) -> None:
         with self.db:
+            try:
+                self._queue(owner, self.read(owner).oauth)
+            except ConnectionRequired:
+                pass
             self.db.execute("DELETE FROM connections WHERE owner=?", (owner,))
             self.db.execute("DELETE FROM connection_links WHERE owner=?", (owner,))
             self._prune_sso()
@@ -173,14 +268,79 @@ class Connections:
     def owner(self, slack_user):
         return self.settings.workspace + ":" + slack_user
 
-    def get(self, slack_user):
-        return self.store.get(self.owner(slack_user))
+    def _trusted(self, connection):
+        if self.settings.connection_auth_mode == "sso":
+            oauth = connection.oauth
+            if (not oauth or oauth.issuer != self.settings.gateway_url or oauth.resource != self.settings.gateway_url
+                    or oauth.user_id != connection.user_id or oauth.credential != connection.credential
+                    or oauth.scope != "proxy:admin"):
+                raise ConnectionRequired()
+        return connection
 
-    def disconnect(self, slack_user):
+    def get(self, slack_user):
+        return self._trusted(self.store.get(self.owner(slack_user)))
+
+    async def cleanup(self, slack_user=None):
+        success = True
+        try:
+            async with asyncio.timeout(15):
+                for token_hash, session in self.store.revocations(self.owner(slack_user) if slack_user else None):
+                    if session.refresh_expires_at <= time.time():
+                        self.store.complete_revocation(token_hash)
+                        continue
+                    if session.issuer != self.settings.gateway_url or session.resource != self.settings.gateway_url:
+                        success = False  # Changing configuration never authorizes a new recipient for an old token.
+                        continue
+                    try:
+                        await self.sso.revoke(session)
+                        self.store.complete_revocation(token_hash)
+                    except (AuthorizationUnavailable, SignInExpired):
+                        success = False
+        except (TimeoutError, ConnectionRequired):
+            success = False
+        success = success and not self.store.has_revocations(self.owner(slack_user) if slack_user else None)
+        if not success:
+            logging.warning("Gateway session revocation is pending")
+        return success
+
+    async def disconnect(self, slack_user):
+        # Local deletion is the tombstone: a suspended refresh cannot recreate this version.
         self.store.disconnect(self.owner(slack_user))
+        return await self.cleanup(slack_user)
+
+    async def acquire(self, slack_user, *, min_validity=15, expected_version=None):
+        owner = self.owner(slack_user)
+        async with self._locks[int(digest(owner)[:8], 16) % len(self._locks)]:
+            await self.cleanup(slack_user)
+            connection = self._trusted(self.store.read(owner))
+            if expected_version is not None and connection.version != expected_version:
+                raise ConnectionRequired()
+            if self.store._load(owner).get("state", "ready") != "ready":
+                # A prior process may have rotated this token without saving its response.
+                self.store.invalidate(owner, connection)
+                await self.cleanup(slack_user)
+                raise ConnectionRequired()
+            if connection.oauth is None:
+                return self.get(slack_user)
+            if connection.expires_at > time.time() + min_validity:
+                return connection
+            self.store.begin_refresh(owner, connection)
+            try:
+                session = await self.sso.refresh(connection.oauth)
+                self.store.finish_refresh(owner, connection, session)
+            except BaseException as exc:
+                # Neither cancellation nor a timeout proves the refresh was not consumed.
+                self.store.invalidate(owner, connection)
+                if isinstance(exc, Exception):
+                    await self.cleanup(slack_user)
+                if isinstance(exc, SignInExpired):
+                    raise ConnectionRequired() from None
+                raise
+            return self._trusted(self.store.get(owner))
 
     async def link(self, slack_user):
         await self.authorizer.slack_email(slack_user, self.slack)
+        await self.cleanup(slack_user)
         token = self.store.issue(self.owner(slack_user))
         return self.settings.public_url + "/connect/" + token
 
@@ -217,7 +377,7 @@ class Connections:
 <p>LiteLLM will ask you to approve this app, then return you here automatically. Model requests and admin actions will use your own account.</p>
 <form method="post"><input type="hidden" name="csrf" value="{csrf}">
 <button type="submit" name="action" value="start">Continue with LiteLLM SSO</button></form>
-<small>No API key or terminal code needed. Your session is encrypted before it is saved. Send “disconnect” in Slack to remove it, or “connect” when you need to sign in again.</small>""")
+<small>No API key or terminal code needed. Your session is encrypted before it is saved. The session renews securely for up to 24 hours. Send “disconnect” in Slack to revoke it, or “connect” to sign in again.</small>""")
         if self.settings.connection_auth_mode == "api_key":
             result = page("Connect your LiteLLM account", f"""<p>Enter a personal LiteLLM virtual key belonging to your own proxy-admin account. Your gateway account email must match your Slack email.</p>
 <p>Model usage and admin actions use this key. Do not use the gateway master key or someone else’s key. Never paste a key into Slack.</p>
@@ -246,6 +406,8 @@ class Connections:
     def _failure(self, exc):
         if isinstance(exc, (ConnectionRequired, SignInExpired)):
             return self._expired()
+        if isinstance(exc, GatewayIncompatible):
+            return page("Gateway update required", "<p>This gateway does not support hosted administrator sign-in. Ask the gateway administrator to upgrade to a release with hosted <strong>proxy:admin</strong> authorization and allow this app’s exact callback URL. Then send <strong>connect</strong> in Slack.</p>", 503)
         if isinstance(exc, AuthorizationUnavailable):
             logging.warning("Account connection rejected (authorization_unavailable)")
             return page("Couldn’t verify access", "<p>The gateway or Slack is temporarily unavailable. Send <strong>connect</strong> in Slack for a new link and try again.</p>", 503)
@@ -297,6 +459,7 @@ class Connections:
                 return self._failure(exc)
 
     async def callback(self, request):
+        signed_in = None
         try:
             binding = json.loads(self.store.cipher.decrypt(request.cookies.get(OAUTH_COOKIE, "").encode(), ttl=600))
             if len(request.query.getall("state", [])) != 1 or not hmac.compare_digest(binding["state"], request.query["state"]):
@@ -319,12 +482,18 @@ class Connections:
                 if len(request.query.getall("code", [])) != 1:
                     raise AccessDenied()
                 signed_in = await self.sso.exchange(OAuthFlow(**pending["flow"]), request.query["code"])
+                # Persist cleanup before another await; a rejected or interrupted login leaves no orphan grant.
+                self.store.queue_revocation(owner, signed_in, after=pending["flow"]["expires_at"])
                 principal = await self.authorizer.require_slack_admin(slack_user, self.slack, signed_in.credential)
                 if principal.user_id != signed_in.user_id:
                     raise AccessDenied()
-                self.store.finish(token, owner, principal.user_id, signed_in.credential, signed_in.expires_at)
+                self.store.finish(token, owner, principal.user_id, signed_in.credential, signed_in.expires_at, oauth=signed_in)
+                await self.cleanup(slack_user)
                 return self._connected()
             except (AccessDenied, AuthorizationUnavailable, ConnectionRequired, SignInExpired) as exc:
+                if signed_in is not None:
+                    self.store.queue_revocation(owner, signed_in)
+                    await self.cleanup(slack_user)
                 return self._failure(exc)
 
     def _connected(self):

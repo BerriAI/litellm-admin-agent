@@ -79,7 +79,7 @@ async def test_thread_and_replay_records_survive_restart_including_old_event_ids
 
 @pytest.mark.asyncio
 async def test_admins_share_visible_thread_context_but_keep_their_own_credentials():
-    class Connections:
+    class Connections(FakeConnections):
         version = "one"
         def get(self, user): return Connection(user, self.version, user + "-credential")
     class Authorizer:
@@ -118,7 +118,7 @@ async def test_admins_share_visible_thread_context_but_keep_their_own_credential
 
 @pytest.mark.asyncio
 async def test_connection_links_are_private_and_unverified_requests_do_not_follow_threads():
-    class Connections:
+    class Connections(FakeConnections):
         async def link(self, user): return "https://example.com/connect/private-token"
         def get(self, user): raise ConnectionRequired()
     client, journal, model = FakeSlack(), Journal(":memory:"), ScriptedModel()

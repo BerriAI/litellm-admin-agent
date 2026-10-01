@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
 from typing import Awaitable, Callable
@@ -51,7 +52,8 @@ class AgentRunner:
     async def execute(self, text: str, principal: Principal, context: str, event_id: str,
                       verify: Callable[[], Awaitable[None]], credential: str,
                       *, extra_tools: tuple[FunctionTool, ...] = (),
-                      history: list[dict] | None = None, check_reply: bool = False) -> Outcome:
+                      history: list[dict] | None = None, check_reply: bool = False,
+                      prepare: Callable[[], Awaitable[tuple[str, float | None]]] | None = None) -> Outcome:
         if not self.accepting or self.pending >= self.settings.max_pending_requests:
             raise AgentBusy()
         task = asyncio.current_task()
@@ -63,8 +65,14 @@ class AgentRunner:
             except TimeoutError:
                 raise AgentBusy() from None
             try:
-                return await self._execute(text, principal, context, event_id, verify, credential,
-                                           extra_tools, history, check_reply)
+                bearer, expires_at = await prepare() if prepare else (credential, None)
+                timeout = (self.settings.run_timeout_seconds if expires_at is None else
+                           min(self.settings.run_timeout_seconds, expires_at - time.time() - 15))
+                if timeout <= 0:
+                    from connections import ConnectionRequired
+                    raise ConnectionRequired()
+                return await self._execute(text, principal, context, event_id, verify, bearer,
+                                           extra_tools, history, check_reply, timeout)
             finally:
                 self.lock.release()
         finally:
@@ -80,12 +88,12 @@ class AgentRunner:
             await asyncio.gather(*pending, return_exceptions=True)
 
     async def _execute(self, text, principal, context, event_id, verify, credential,
-                       extra_tools, history_override, check_reply) -> Outcome:
+                       extra_tools, history_override, check_reply, timeout) -> Outcome:
         identity = (principal.actor, context)
         bridge = None
         stage = "authorization"
         try:
-            async with asyncio.timeout(self.settings.run_timeout_seconds):
+            async with asyncio.timeout(timeout):
                 history = self.conversations.get(identity, []) if history_override is None else history_override
                 inputs = history + [{"role": "user", "content": text}]
                 await verify()

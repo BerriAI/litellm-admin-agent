@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 import time
@@ -9,7 +10,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from cryptography.fernet import Fernet
 
-from auth import AccessDenied, Principal
+from auth import AccessDenied, AuthorizationUnavailable, Principal
 from connections import COOKIE, OAUTH_COOKIE, ConnectionRequired, ConnectionStore, Connections
 from core import Journal
 from test_agent import settings
@@ -74,7 +75,12 @@ class SSO:
     def __init__(self):
         self.starts = 0
         self.exchanges = []
-        self.result = SignInResult(user_id="alice", expires_at=time.time() + 3600, credential="alice-session-secret")
+        self.revoked = []
+        self.refreshed = []
+        gateway = settings().gateway_url
+        self.result = SignInResult("alice", time.time() + 300, "alice-session-secret", "registered-client",
+                                  gateway, gateway, gateway + "/token", gateway + "/revoke", "private-refresh",
+                                  time.time() + 86400)
     async def start(self):
         self.starts += 1
         return OAuthFlow("registered-client", time.time() + 600, "private-state", "private-pkce-verifier")
@@ -83,6 +89,17 @@ class SSO:
     async def exchange(self, flow, code):
         self.exchanges.append(code)
         return self.result
+    async def refresh(self, session):
+        self.refreshed.append(session)
+        return replace(session, credential="renewed-access", refresh_token="renewed-refresh", expires_at=time.time() + 300)
+    async def revoke(self, session):
+        self.revoked.append(session)
+
+
+def save_session(connections, session=None):
+    session = session or connections.sso.result
+    connections.store.save(connections.owner("Ualice"), session.user_id, session.credential, session.expires_at, oauth=session)
+    return connections.store.read(connections.owner("Ualice"))
 
 
 @pytest_asyncio.fixture
@@ -209,7 +226,7 @@ async def test_disconnect_invalidates_pending_links_and_connection(service):
     _, connections, _ = service
     url = await connections.link("Ualice")
     connections.store.save(connections.owner("Ualice"), "alice", "secret")
-    connections.disconnect("Ualice")
+    await connections.disconnect("Ualice")
     with pytest.raises(ConnectionRequired): connections.get("Ualice")
     with pytest.raises(ConnectionRequired): connections.store.owner(url.rsplit("/", 1)[1])
 
@@ -242,9 +259,9 @@ async def test_disconnect_or_new_link_during_exchange_cannot_reattach(service, c
     client, connections, _ = service
     _, _, _, headers = await start(service)
     async def exchange(flow, code):
-        if change == "disconnect": connections.disconnect("Ualice")
+        if change == "disconnect": await connections.disconnect("Ualice")
         else: await connections.link("Ualice")
-        return SignInResult(user_id="alice", expires_at=time.time() + 3600, credential="stale-session")
+        return replace(connections.sso.result, credential="stale-session")
     connections.sso.exchange = exchange
     result = await callback(client, headers)
     assert result.status == 410
@@ -255,7 +272,7 @@ async def test_disconnect_or_new_link_during_exchange_cannot_reattach(service, c
 async def test_mismatched_user_id_cannot_save_session(service):
     client, connections, _ = service
     _, _, _, headers = await start(service)
-    connections.sso.result = SignInResult(user_id="someone-else", expires_at=time.time() + 3600, credential="session")
+    connections.sso.result = replace(connections.sso.result, user_id="someone-else", credential="session")
     assert (await callback(client, headers)).status == 403
     with pytest.raises(ConnectionRequired): connections.get("Ualice")
 
@@ -278,7 +295,7 @@ def test_pending_flow_encrypted_and_survives_restart_but_not_expiry(tmp_path):
 @pytest.mark.asyncio
 async def test_cancellation_preserves_old_connection_and_consumes_link(service):
     client, connections, _ = service
-    connections.store.save(connections.owner("Ualice"), "alice", "existing-key")
+    save_session(connections, replace(connections.sso.result, credential="existing-key"))
     path, _, _, headers = await start(service)
     assert connections.get("Ualice").credential == "existing-key"
     result = await client.get("/oauth/callback", params={"state": "private-state", "error": "access_denied"}, headers=headers)
@@ -292,3 +309,184 @@ def test_expired_session_requires_reconnection():
     db = store()
     db.save("T:alice", "alice", "expired-session", time.time() - 1)
     with pytest.raises(ConnectionRequired): db.get("T:alice")
+
+
+@pytest.mark.asyncio
+async def test_refresh_is_serialized_preserves_login_and_encrypts_across_restart(service, tmp_path):
+    _, connections, _ = service
+    encryption_key = Fernet.generate_key().decode()
+    db_path = str(tmp_path / "refresh.sqlite3")
+    connections.store = store(db_path, encryption_key)
+    original = save_session(connections, replace(connections.sso.result, expires_at=time.time() - 1))
+    first, second = await asyncio.gather(connections.acquire("Ualice"), connections.acquire("Ualice"))
+    assert first == second and first.credential == "renewed-access"
+    assert first.version == original.version and first.generation == 1
+    assert len(connections.sso.refreshed) == 1
+    connections.store.db.close()
+    assert b"renewed-refresh" not in (tmp_path / "refresh.sqlite3").read_bytes()
+    connections.store = store(db_path, encryption_key)
+    restored = await connections.acquire("Ualice")
+    assert restored == first and restored.oauth.refresh_token == "renewed-refresh"
+    assert "renewed-refresh" not in repr(restored)
+
+
+@pytest.mark.asyncio
+async def test_unknown_refresh_is_never_retried_and_failed_revoke_survives_restart(service, tmp_path):
+    _, connections, _ = service
+    encryption_key = Fernet.generate_key().decode()
+    db_path = str(tmp_path / "uncertain.sqlite3")
+    connections.store = store(db_path, encryption_key)
+    save_session(connections, replace(connections.sso.result, expires_at=time.time() - 1))
+    attempts = []
+    async def refresh(session):
+        attempts.append(session.refresh_token)
+        raise AuthorizationUnavailable()
+    async def unavailable(session):
+        raise AuthorizationUnavailable()
+    connections.sso.refresh = refresh
+    connections.sso.revoke = unavailable
+    with pytest.raises(AuthorizationUnavailable):
+        await connections.acquire("Ualice")
+    with pytest.raises(ConnectionRequired):
+        await connections.acquire("Ualice")
+    assert attempts == ["private-refresh"]
+    connections.store.db.close()
+    connections.store = store(db_path, encryption_key)
+    assert len(list(connections.store.revocations())) == 1
+    connections.sso = SSO()
+    assert await connections.cleanup()
+    assert connections.sso.revoked[0].refresh_token == "private-refresh"
+    assert not list(connections.store.revocations())
+
+
+@pytest.mark.asyncio
+async def test_persisted_refresh_intent_after_crash_requires_reconnect(service):
+    _, connections, _ = service
+    original = save_session(connections)
+    connections.store.begin_refresh(connections.owner("Ualice"), original)
+    with pytest.raises(ConnectionRequired):
+        await connections.acquire("Ualice")
+    assert not connections.sso.refreshed
+    assert connections.sso.revoked == [original.oauth]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["disconnect", "reconnect"])
+async def test_late_refresh_never_recreates_logout_or_overwrites_new_login(service, change):
+    _, connections, _ = service
+    original = save_session(connections, replace(connections.sso.result, expires_at=time.time() - 1))
+    async def refresh(session):
+        if change == "disconnect":
+            await connections.disconnect("Ualice")
+        else:
+            save_session(connections, replace(connections.sso.result, credential="new-login", refresh_token="new-family"))
+        return replace(session, credential="late-access", refresh_token="late-refresh", expires_at=time.time() + 300)
+    connections.sso.refresh = refresh
+    with pytest.raises(ConnectionRequired):
+        await connections.acquire("Ualice")
+    if change == "disconnect":
+        with pytest.raises(ConnectionRequired): connections.get("Ualice")
+    else:
+        current = connections.get("Ualice")
+        assert current.credential == "new-login" and current.version != original.version
+    assert any(item.refresh_token == "private-refresh" for item in connections.sso.revoked)
+
+
+@pytest.mark.asyncio
+async def test_gateway_change_and_legacy_sso_never_forward_saved_credentials(service):
+    _, connections, _ = service
+    connections.store.save(connections.owner("Ualice"), "alice", "legacy-unbound")
+    with pytest.raises(ConnectionRequired): await connections.acquire("Ualice")
+    original = save_session(connections)
+    connections.settings = replace(connections.settings, model_url="https://other.example/v1")
+    with pytest.raises(ConnectionRequired): await connections.acquire("Ualice")
+    with pytest.raises(ConnectionRequired): connections.get("Ualice")
+    assert await connections.disconnect("Ualice") is False
+    assert not connections.sso.refreshed and not connections.sso.revoked
+    assert list(connections.store.revocations())[0][1] == original.oauth
+
+
+@pytest.mark.asyncio
+async def test_logout_revocation_failure_does_not_block_local_logout_or_new_login(service):
+    client, connections, _ = service
+    old = save_session(connections)
+    async def unavailable(session): raise AuthorizationUnavailable()
+    connections.sso.revoke = unavailable
+    assert await connections.disconnect("Ualice") is False
+    with pytest.raises(ConnectionRequired): connections.get("Ualice")
+    connections.sso.result = replace(connections.sso.result, credential="new-access", refresh_token="new-family")
+    _, _, _, headers = await start(service)
+    assert (await callback(client, headers)).status == 200
+    assert connections.get("Ualice").credential == "new-access"
+    assert list(connections.store.revocations())[0][1] == old.oauth
+
+
+@pytest.mark.asyncio
+async def test_callback_cleanup_does_not_revoke_candidate_while_verification_awaits(service):
+    client, connections, auth = service
+    original_verify = auth.require_slack_admin
+    async def verify(*args):
+        await connections.cleanup()
+        assert not connections.sso.revoked
+        return await original_verify(*args)
+    auth.require_slack_admin = verify
+    _, _, _, headers = await start(service)
+    assert (await callback(client, headers)).status == 200
+    assert not list(connections.store.revocations())
+
+
+@pytest.mark.asyncio
+async def test_rejected_callback_revokes_candidate_and_reconnect_revokes_previous(service):
+    client, connections, auth = service
+    old = save_session(connections)
+    connections.sso.result = replace(old.oauth, credential="replacement-access", refresh_token="replacement-refresh")
+    _, _, _, headers = await start(service)
+    assert (await callback(client, headers)).status == 200
+    assert connections.sso.revoked == [old.oauth]
+    _, _, _, headers = await start(service)
+    connections.sso.result = replace(old.oauth, refresh_token="rejected-refresh")
+    auth.denied = True
+    assert (await callback(client, headers)).status == 403
+    assert connections.sso.revoked[-1].refresh_token == "rejected-refresh"
+    assert connections.get("Ualice").credential == "replacement-access"
+
+
+@pytest.mark.asyncio
+async def test_refresh_intent_precedes_network_and_inflight_access_remains_valid(service):
+    _, connections, _ = service
+    original = save_session(connections)
+    async def refresh(session):
+        assert connections.store._load(connections.owner("Ualice"))["state"] == "refreshing"
+        assert connections.get("Ualice").credential == original.credential
+        return replace(session, credential="rotated-access", refresh_token="rotated-refresh", expires_at=time.time() + 300)
+    connections.sso.refresh = refresh
+    renewed = await connections.acquire("Ualice", min_validity=600)
+    assert renewed.version == original.version and renewed.credential == "rotated-access"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_refresh_persists_cleanup_and_does_not_retry(service):
+    _, connections, _ = service
+    save_session(connections, replace(connections.sso.result, expires_at=time.time() - 1))
+    async def refresh(session):
+        raise asyncio.CancelledError()
+    connections.sso.refresh = refresh
+    with pytest.raises(asyncio.CancelledError):
+        await connections.acquire("Ualice")
+    assert len(list(connections.store.revocations())) == 1
+    with pytest.raises(ConnectionRequired): connections.get("Ualice")
+    with pytest.raises(ConnectionRequired): await connections.acquire("Ualice")
+    assert len(connections.sso.revoked) == 1
+
+
+@pytest.mark.asyncio
+async def test_missing_hosted_support_is_actionable_without_starting_browser_login(service):
+    from sso import GatewayIncompatible
+    client, connections, _ = service
+    async def unavailable(): raise GatewayIncompatible()
+    connections.sso.start = unavailable
+    path, data, headers = await form(service)
+    response = await client.post(path, data=data, headers=headers)
+    text = await response.text()
+    assert response.status == 503 and "Gateway update required" in text and "proxy:admin" in text
+    assert "data-oauth-redirect" not in text

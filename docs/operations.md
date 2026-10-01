@@ -4,11 +4,11 @@
 
 Run exactly **one process and one replica** per deployment. Slack Socket Mode deliveries, SQLite state and in-memory conversation history are local to this service. Multiple replicas are not a high-availability configuration.
 
-`STATE_DB` contains encrypted connections, expiring connection links, replay identifiers, accepted Slack thread IDs and an audit journal with actor IDs/tool names/statuses. It does not store tool arguments or results. Conversations are in memory, isolated per caller/transport/conversation, bounded to 100 conversations and 20 messages each, and clear on restart.
+`STATE_DB` contains encrypted connections and pending gateway revocations, expiring connection links, replay identifiers, accepted Slack thread IDs and an audit journal with actor IDs/tool names/statuses. It does not store tool arguments or results. Conversations are in memory, isolated per caller/transport/conversation, bounded to 100 conversations and 20 messages each, and clear on restart.
 
-AgentChat handles Slack Socket Mode and routing; the existing agent runner owns history and execution. Accepted thread IDs persist for seven days since last verified admin activity, capped at 1,000. History is also separated by each saved connection version, so reconnecting starts fresh context.
+AgentChat handles Slack Socket Mode and routing; the existing agent runner owns history and execution. Accepted thread IDs persist for seven days since last verified admin activity, capped at 1,000. History is also separated by each saved connection version, so reconnecting starts fresh context. Routine token renewal preserves that version.
 
-Requests execute serially. `MAX_PENDING_REQUESTS` defaults to 8 including the active run, `QUEUE_TIMEOUT_SECONDS` to 30 and `RUN_TIMEOUT_SECONDS` to 180. Run deadlines do not undo completed gateway actions. Queue rejection starts no tools. The agent never automatically retries an uncertain write. Slack delivery retries and duplicate A2A IDs cannot replay an accepted event.
+Requests execute serially. `MAX_PENDING_REQUESTS` defaults to 8 including the active run, `QUEUE_TIMEOUT_SECONDS` to 30 and `RUN_TIMEOUT_SECONDS` to 180. SSO requests refresh after admission when necessary and cap the run deadline to the remaining access-token lifetime. Run deadlines do not undo completed gateway actions. Queue rejection starts no tools. The agent never automatically retries an uncertain write. Slack delivery retries and duplicate A2A IDs cannot replay an accepted event.
 
 The process stops accepting new work on SIGTERM/SIGINT and drains or cancels active handlers before closing its database. Leave at least 75 seconds of shutdown grace with the provided configuration. If a host kills the process abruptly, its journal preserves the received event ID; inspect any `started`/`outcome_unknown` actions before retrying.
 
@@ -65,7 +65,7 @@ Back up first. Pin the reviewed commit/image, rebuild, keep the state volume and
 This release preserves the existing credential tables but changes deployment templates:
 
 - Replace BerriAI-specific workspace/gateway/model values with your own.
-- Keep `CONNECTION_AUTH_MODE=sso` for existing SSO deployments. The Render Blueprint asks for a login method on creation and uses `sync: false` to preserve your choice on later updates. The Docker `.env` template starts with `api_key`.
+- Keep `CONNECTION_AUTH_MODE=sso` for existing SSO deployments. Upgrade the gateway to a release advertising hosted `proxy:admin` support, configure `LITELLM_PROXY_API_OAUTH_ADMIN_REDIRECT_URIS`, and reconnect each existing SSO account once; no separate backend image pin is required. The Render Blueprint asks for a login method on creation and uses `sync: false` to preserve your choice on later updates. The Docker `.env` template starts with `api_key`.
 - If you synced an earlier Render Blueprint that set `CONNECTION_AUTH_MODE=api_key`, restore `sso` in the service’s **Environment** tab and redeploy. Updating the Blueprint alone does not undo that setting.
 - `ADMIN_READ_ONLY` defaults to false, so connected admins can request changes. Set it to true for a read-only deployment. If you deployed the earlier template with `ADMIN_READ_ONLY=true`, remove that setting or change it to false to use the new default behavior.
 - The image now includes all connection/SSO assets and the pinned connector package. Compose injects only runtime configuration.
@@ -117,7 +117,8 @@ to apply. See the connector's own release notes when changing its version.
 | `/readyz` returns 503 | Slack app token / `connections:write`, outbound WSS, socket disconnects, persistent storage and process shutdown |
 | Connection denied | Current gateway `proxy_admin` role, exact email match, key ownership, account/key expiry and guest/bot status |
 | Browser session rejected | Open a fresh private link in one browser; preserve Origin; HTTPS is required; the public URL must be an origin without a path |
-| SSO callback rejected | Hosted proxy API OAuth support and the exact callback allowlist; use explicitly configured personal-key mode if unsupported |
+| SSO callback rejected or Gateway update required | Gateway discovery must advertise hosted `proxy:admin` support; configure the exact admin callback allowlist on a normal release that supports it |
+| Gateway revocation pending | Local access is already removed; retained encrypted cleanup retries on startup and requests until the gateway acknowledges revocation or the grant expires |
 | Admin tools unavailable | Run `doctor.py`; check the installed connector, gateway APIs, personal credential and canonical tool allowlist; for hosted mode also check `ADMIN_MCP_URL` |
 | Writes refused | Read-only mode is enabled; changing model instructions cannot bypass it |
 | 429 / busy | Reduce traffic or tune bounded queue limits; this is a single-runner service |
