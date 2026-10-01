@@ -38,24 +38,23 @@ routes present in the gateway's OpenAPI spec.
 
 ## Optional browser SSO
 
-Set `CONNECTION_AUTH_MODE=sso` only on a gateway that implements the hosted **proxy API** authorization-code flow:
+Set `CONNECTION_AUTH_MODE=sso` to reuse your gateway's configured SSO provider. The app discovers hosted administrator authorization from `/.well-known/litellm-cli-auth` on `LITELLM_BASE_URL`; it does not need Google/Okta client secrets or a custom gateway image.
 
-- Dynamic client registration at `/register` with an exact HTTPS redirect URI and `token_endpoint_auth_method=none`.
-- `/authorize` using S256 PKCE, `resource=<gateway origin>` and the gateway’s configured SSO provider/consent.
-- `/token` returning `access_token`, `token_type=Bearer`, `user_id` and `expires_in`.
-- The gateway’s exact callback allowlist:
+Use a normal gateway release that advertises `proxy:admin` in `hosted_app.scopes_supported`, with contract version 1, S256 PKCE, public-client registration, refresh tokens and revocation. Missing support produces a **Gateway update required** message before redirecting to sign-in. The app trusts only the configured gateway origin for the issuer, resource and token endpoints.
+
+Allow the app's exact HTTPS callback on the gateway:
 
 ```text
-LITELLM_PROXY_API_OAUTH_REDIRECT_URIS=https://admin.example.com/oauth/callback
+LITELLM_PROXY_API_OAUTH_ADMIN_REDIRECT_URIS=https://admin.example.com/oauth/callback
 ```
 
-This setting is separate from MCP OAuth redirect configuration. Do not use wildcards. The gateway must already have its own SSO provider configured; this app does not need a separate Google/Okta client secret.
+This is a separate opt-in from the reporting-only `LITELLM_PROXY_API_OAUTH_REDIRECT_URIS` and MCP OAuth redirect settings. Do not use wildcards. The gateway must have its normal SSO provider and shared grant storage configured. Keep the callback configuration and shared storage when upgrading the standard gateway deployment.
 
-The original integration used LiteLLM source commit `445c1cc0e04bd98e226c917232c60bab0f20d46a` for hosted callbacks. This repository does not assert that a particular published gateway image contains it. Verify support in your release or use personal-key mode; do not deploy the historical BerriAI private overlay as a general installation dependency.
+The app requests explicit `proxy:admin` consent. The gateway checks the user's current administrator role and existing permissions on each use; connecting does not confer a new role. A login round trip is required to validate the installation: send `connect`, sign in, confirm return to the browser page, then make a read request in Slack.
 
-A login round trip is required to validate SSO: send `connect`, sign in, confirm return to the browser page, and make a read request in Slack. An unsupported callback must fail closed. The app does not silently switch authentication modes.
+Access tokens last up to five minutes. Encrypted rotating refresh tokens renew them for at most 24 hours after consent. The app records refresh attempts before sending them; a timeout or interrupted rotation requires reconnecting instead of replaying the refresh or an administrator action. Sessions are bound to their gateway origin, verified Slack email and browser flow. Disconnect removes local access immediately and revokes the gateway token family. If revocation is temporarily unavailable, encrypted cleanup records survive restart and are retried on startup and subsequent requests.
 
-Sessions and pending PKCE material are encrypted. State, CSRF, exact Origin, secure cookies, expiring links and verified Slack email bind the flow to the requester. Refresh tokens are revoked when supported and discarded; the app retains only the time-limited access session. Disconnect deletes the stored copy rather than revoking the gateway session.
+Existing SSO connections from the prototype did not retain bound refresh state and require one new sign-in after upgrading. Personal-key connections are unchanged. Changing the gateway origin never forwards an existing SSO credential to the new gateway; reconnect to the new gateway instead.
 
 ## Optional gateway Agents / A2A
 

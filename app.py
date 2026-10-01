@@ -72,15 +72,16 @@ def build_listener(settings: Settings, journal: Journal, client, model=None, con
             command = message.text.casefold()
             if command == "disconnect":
                 await authorizer.slack_email(user, client)
-                connections.disconnect(user)
+                revoked = await connections.disconnect(user)
                 runner.conversations = {k: v for k, v in runner.conversations.items()
                                         if not k[0].startswith("slack:" + user + ":")}
-                await reply("Your LiteLLM account is disconnected. Your saved credential has been removed.")
+                await reply("Your LiteLLM account is disconnected. Your saved credential has been removed." +
+                            ("" if revoked else " Gateway session revocation is pending; the app will retry it."))
                 status = "completed"
                 return
             if command == "connect":
                 raise ConnectionRequired()
-            connection = connections.get(user)
+            connection = await connections.acquire(user)
             principal = await authorizer.require_slack_admin(user, client, connection.credential)
             if principal.user_id != connection.user_id:
                 raise AccessDenied()
@@ -91,6 +92,12 @@ def build_listener(settings: Settings, journal: Journal, client, model=None, con
                     raise AccessDenied()
                 if await authorizer.require_slack_admin(user, client, connection.credential) != principal:
                     raise AccessDenied()
+
+            async def prepare():
+                nonlocal connection
+                connection = await connections.acquire(user, expected_version=connection.version,
+                    min_validity=min(settings.run_timeout_seconds + 15, 300))
+                return connection.credential, connection.expires_at
 
             if len(message.text) > 16000:
                 status = "rejected"
@@ -117,7 +124,7 @@ def build_listener(settings: Settings, journal: Journal, client, model=None, con
             outcome = await runner.execute(text, principal,
                 message.conversation_id + ":" + connection.version, event_id, verify, connection.credential,
                 extra_tools=(slack_user_tool(channel, settings.workspace, verify),),
-                history=history, check_reply=not message.addressed)
+                history=history, check_reply=not message.addressed, prepare=prepare)
             if outcome.status == "ignored":
                 status = "ignored"
                 return
@@ -212,6 +219,8 @@ async def main():
         journal = Journal(settings.db_path)
         connections = Connections(settings, ConnectionStore(journal.db, settings.encryption_key), authorizer,
                                   slack_client, LiteLLMSSO(settings.gateway_url, settings.public_url, auth_client)) if slack_client else None
+        if connections:
+            await connections.cleanup()
         runner = AgentRunner(settings, journal)
         slack = None
         if slack_client:
