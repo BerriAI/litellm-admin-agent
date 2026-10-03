@@ -9,7 +9,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from cryptography.fernet import Fernet
 
-from auth import AccessDenied, Principal
+from auth import AccessDenied, EnterpriseRequired, Principal
 from connections import COOKIE, OAUTH_COOKIE, ConnectionRequired, ConnectionStore, Connections
 from core import Journal
 from test_agent import settings
@@ -60,12 +60,13 @@ def test_expiring_links_single_use_and_new_link_invalidates_old():
 
 
 class Authorizer:
-    def __init__(self): self.calls = []; self.denied = False
+    def __init__(self): self.calls = []; self.denied = False; self.community = False
     async def slack_email(self, user, slack):
         if self.denied: raise AccessDenied()
         return "alice@example.com"
     async def require_slack_admin(self, user, slack, credential):
         self.calls.append((user, credential))
+        if self.community: raise EnterpriseRequired()
         if self.denied: raise AccessDenied()
         return Principal("alice", "alice@example.com", "slack", user)
 
@@ -201,6 +202,17 @@ async def test_non_admin_or_wrong_email_does_not_create_connection(service):
     _, _, _, headers = await start(service)
     auth.denied = True
     assert (await callback(client, headers)).status == 403
+    with pytest.raises(ConnectionRequired): connections.get("Ualice")
+
+
+@pytest.mark.asyncio
+async def test_gateway_without_enterprise_license_does_not_create_connection(service):
+    client, connections, auth = service
+    _, _, _, headers = await start(service)
+    auth.community = True
+    result = await callback(client, headers)
+    assert result.status == 403
+    assert "LiteLLM Enterprise required" in await result.text()
     with pytest.raises(ConnectionRequired): connections.get("Ualice")
 
 

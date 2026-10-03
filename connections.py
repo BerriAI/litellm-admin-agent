@@ -15,7 +15,7 @@ from pathlib import Path
 from aiohttp import web
 from cryptography.fernet import Fernet, InvalidToken
 
-from auth import AccessDenied, AuthorizationUnavailable
+from auth import AccessDenied, AuthorizationUnavailable, EnterpriseRequired
 from sso import OAuthFlow, SignInExpired
 
 
@@ -249,6 +249,9 @@ class Connections:
         if isinstance(exc, AuthorizationUnavailable):
             logging.warning("Account connection rejected (authorization_unavailable)")
             return page("Couldn’t verify access", "<p>The gateway or Slack is temporarily unavailable. Send <strong>connect</strong> in Slack for a new link and try again.</p>", 503)
+        if isinstance(exc, EnterpriseRequired):
+            logging.warning("Account connection rejected (enterprise_required)")
+            return page("LiteLLM Enterprise required", f"<p>{EnterpriseRequired.message}</p>", 403)
         logging.warning("Account connection rejected (gateway_account)")
         return page("Couldn’t connect this account", "<p>Sign in to an active LiteLLM proxy-admin account with the same email as Slack. Send <strong>connect</strong> in Slack for a new link.</p>", 403)
 

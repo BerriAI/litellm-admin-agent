@@ -232,6 +232,8 @@ async def test_preflight_verifies_mcp_without_running_tools_or_inference(tmp_pat
         if request.url.path == "/user/info":
             return httpx2.Response(200, json={"user_id": "admin", "user_info": {
                 "user_id": "admin", "user_email": "admin@example.com", "user_role": "proxy_admin"}})
+        if request.url.path == "/health/license":
+            return httpx2.Response(200, json={"license_type": "enterprise"})
         if request.url.path == "/v1/models":
             return httpx2.Response(200, json={"data": [{"id": config.model}]})
         raise AssertionError("Unexpected upstream operation")

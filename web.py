@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 from aiohttp import web
 
-from auth import AccessDenied, AuthorizationUnavailable
+from auth import AccessDenied, AuthorizationUnavailable, EnterpriseRequired
 from engine import AgentBusy
 from connections import page
 
@@ -79,6 +79,8 @@ def create_web_app(settings, authorizer, runner, journal, connections=None, *, r
             return error(None, -32001, "Caller authentication required", 401)
         try:
             principal = await authorizer.require_gateway_admin(bearer)
+        except EnterpriseRequired:
+            return error(None, -32003, EnterpriseRequired.message, 403)
         except AccessDenied:
             return error(None, -32003, "LiteLLM proxy_admin access required", 403)
         except AuthorizationUnavailable:

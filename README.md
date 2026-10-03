@@ -10,7 +10,7 @@ Manage your LiteLLM gateway from Slack DMs and channel threads, using the standa
 
 ## Before you start
 
-- Use a LiteLLM gateway with HTTPS, a database and a model that supports tool calling. Check the [gateway requirements](docs/compatibility.md) for supported management APIs.
+- Use a LiteLLM Enterprise gateway with HTTPS, a database and a model that supports tool calling. Check the [gateway requirements](docs/compatibility.md) for supported management APIs.
 - Give each user a LiteLLM `proxy_admin` account with the same email as their Slack profile.
 - Get permission to create and install a Slack app in your workspace.
 - Install Python 3.12 for the setup commands. Choose Docker Compose or a paid Render service with persistent storage for hosting.
