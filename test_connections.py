@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 import time
@@ -9,7 +10,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from cryptography.fernet import Fernet
 
-from auth import AccessDenied, Principal
+from auth import AccessDenied, AuthorizationUnavailable, Principal
 from connections import COOKIE, OAUTH_COOKIE, ConnectionRequired, ConnectionStore, Connections
 from core import Journal
 from test_agent import settings
@@ -25,13 +26,15 @@ def test_keys_encrypted_persisted_and_bound_to_owner(tmp_path):
     key = Fernet.generate_key().decode()
     path = str(tmp_path / "connections.sqlite3")
     first = store(path, key)
-    first.save("T:alice", "alice", "alice-personal-secret")
+    first.save("T:alice", "alice", "alice-personal-secret", oauth=session(credential="alice-personal-secret"))
     first.save("T:bob", "bob", "bob-personal-secret")
     assert "alice-personal-secret" not in repr(first.get("T:alice"))
     first.db.close()
     assert b"alice-personal-secret" not in (tmp_path / "connections.sqlite3").read_bytes()
+    assert b"refresh-secret" not in (tmp_path / "connections.sqlite3").read_bytes()
     second = store(path, key)
     assert second.get("T:alice").credential == "alice-personal-secret"
+    assert second.get("T:alice").oauth.refresh_token == "refresh-secret"
     assert second.get("T:bob").credential == "bob-personal-secret"
     with second.db:
         second.db.execute("UPDATE connections SET encrypted=(SELECT encrypted FROM connections WHERE owner='T:alice') WHERE owner='T:bob'")
@@ -70,11 +73,24 @@ class Authorizer:
         return Principal("alice", "alice@example.com", "slack", user)
 
 
+def session(**overrides):
+    return replace(SignInResult(time.time() + 3600, "alice-session-secret", "refresh-secret", "registered-client",
+                               settings().gateway_url, settings().gateway_url + "/token",
+                               settings().gateway_url + "/revoke", time.time() + 86400), **overrides)
+
+
 class SSO:
     def __init__(self):
         self.starts = 0
         self.exchanges = []
-        self.result = SignInResult(user_id="alice", expires_at=time.time() + 3600, credential="alice-session-secret")
+        self.result = session()
+        self.revoked = []
+        self.renewals = 0
+    async def refresh(self, previous):
+        self.renewals += 1
+        return replace(previous, credential="renewed-secret", refresh_token="rotated-secret", expires_at=time.time() + 3600)
+    async def revoke(self, previous):
+        self.revoked.append(previous.refresh_token)
     async def start(self):
         self.starts += 1
         return OAuthFlow("registered-client", time.time() + 600, "private-state", "private-pkce-verifier")
@@ -141,6 +157,7 @@ async def test_sso_stores_only_verified_session_then_rejects_replay(service):
     assert result.status == 200 and "Account connected" in await result.text()
     assert "alice-session-secret" not in await result.text()
     assert connections.get("Ualice").credential == "alice-session-secret"
+    assert connections.get("Ualice").user_id == "alice"
     assert connections.get("Ualice").expires_at == connections.sso.result.expires_at
     assert auth.calls == [("Ualice", "alice-session-secret")]
     assert (await callback(client, oauth_headers)).status == 410
@@ -209,7 +226,7 @@ async def test_disconnect_invalidates_pending_links_and_connection(service):
     _, connections, _ = service
     url = await connections.link("Ualice")
     connections.store.save(connections.owner("Ualice"), "alice", "secret")
-    connections.disconnect("Ualice")
+    await connections.disconnect("Ualice")
     with pytest.raises(ConnectionRequired): connections.get("Ualice")
     with pytest.raises(ConnectionRequired): connections.store.owner(url.rsplit("/", 1)[1])
 
@@ -242,22 +259,14 @@ async def test_disconnect_or_new_link_during_exchange_cannot_reattach(service, c
     client, connections, _ = service
     _, _, _, headers = await start(service)
     async def exchange(flow, code):
-        if change == "disconnect": connections.disconnect("Ualice")
+        if change == "disconnect": await connections.disconnect("Ualice")
         else: await connections.link("Ualice")
-        return SignInResult(user_id="alice", expires_at=time.time() + 3600, credential="stale-session")
+        return session(credential="stale-session")
     connections.sso.exchange = exchange
     result = await callback(client, headers)
     assert result.status == 410
     with pytest.raises(ConnectionRequired): connections.get("Ualice")
 
-
-@pytest.mark.asyncio
-async def test_mismatched_user_id_cannot_save_session(service):
-    client, connections, _ = service
-    _, _, _, headers = await start(service)
-    connections.sso.result = SignInResult(user_id="someone-else", expires_at=time.time() + 3600, credential="session")
-    assert (await callback(client, headers)).status == 403
-    with pytest.raises(ConnectionRequired): connections.get("Ualice")
 
 
 def test_pending_flow_encrypted_and_survives_restart_but_not_expiry(tmp_path):
@@ -278,7 +287,7 @@ def test_pending_flow_encrypted_and_survives_restart_but_not_expiry(tmp_path):
 @pytest.mark.asyncio
 async def test_cancellation_preserves_old_connection_and_consumes_link(service):
     client, connections, _ = service
-    connections.store.save(connections.owner("Ualice"), "alice", "existing-key")
+    connections.store.save(connections.owner("Ualice"), "alice", "existing-key", oauth=session(credential="existing-key"))
     path, _, _, headers = await start(service)
     assert connections.get("Ualice").credential == "existing-key"
     result = await client.get("/oauth/callback", params={"state": "private-state", "error": "access_denied"}, headers=headers)
@@ -292,3 +301,117 @@ def test_expired_session_requires_reconnection():
     db = store()
     db.save("T:alice", "alice", "expired-session", time.time() - 1)
     with pytest.raises(ConnectionRequired): db.get("T:alice")
+
+
+@pytest.mark.asyncio
+async def test_concurrent_acquire_rotates_once_without_changing_conversation_identity(service):
+    client, connections, _ = service
+    connections.sso.result = session(expires_at=time.time() + 5)
+    _, _, _, headers = await start(service)
+    assert (await callback(client, headers)).status == 200
+    before = connections.get("Ualice")
+    renewed = await asyncio.gather(connections.acquire("Ualice"), connections.acquire("Ualice"))
+    assert connections.sso.renewals == 1
+    assert all(item.version == before.version and item.credential == "renewed-secret" for item in renewed)
+    encrypted = connections.store.db.execute("SELECT encrypted FROM connections").fetchone()[0]
+    assert b"rotated-secret" not in encrypted and b"renewed-secret" not in encrypted
+    assert connections.get("Ualice").oauth.refresh_token == "rotated-secret"
+
+
+@pytest.mark.asyncio
+async def test_interrupted_rotation_is_revoked_after_restart_without_replaying_refresh(service):
+    client, connections, _ = service
+    _, _, _, headers = await start(service)
+    assert (await callback(client, headers)).status == 200
+    connections.store.refresh(connections.owner("Ualice"), connections.get("Ualice"))
+    restarted = Connections(connections.settings, connections.store, connections.authorizer, object(), connections.sso)
+    with pytest.raises(ConnectionRequired):
+        await restarted.acquire("Ualice")
+    assert connections.sso.renewals == 0 and connections.sso.revoked == ["refresh-secret"]
+    with pytest.raises(ConnectionRequired): restarted.get("Ualice")
+
+
+@pytest.mark.parametrize("action", ["disconnect", "reconnect"])
+@pytest.mark.asyncio
+async def test_late_refresh_cannot_resurrect_or_replace_a_connection(service, action):
+    client, connections, _ = service
+    connections.sso.result = session(expires_at=time.time() + 5)
+    _, _, _, headers = await start(service)
+    assert (await callback(client, headers)).status == 200
+    entered, resume = asyncio.Event(), asyncio.Event()
+    async def suspended(previous):
+        entered.set()
+        await resume.wait()
+        return session(credential="late-access", refresh_token="late-refresh")
+    connections.sso.refresh = suspended
+    pending = asyncio.create_task(connections.acquire("Ualice"))
+    await entered.wait()
+    if action == "disconnect":
+        await connections.disconnect("Ualice")
+    else:
+        fresh = session(credential="fresh-access", refresh_token="fresh-refresh")
+        connections.store.save(connections.owner("Ualice"), "alice", fresh.credential, fresh.expires_at, oauth=fresh)
+    resume.set()
+    with pytest.raises(ConnectionRequired): await pending
+    if action == "disconnect":
+        with pytest.raises(ConnectionRequired): connections.get("Ualice")
+    else:
+        assert connections.get("Ualice").credential == "fresh-access"
+    assert "refresh-secret" in connections.sso.revoked
+    assert "fresh-refresh" not in connections.sso.revoked
+
+
+@pytest.mark.asyncio
+async def test_disconnect_keeps_failed_revocation_encrypted_for_retry(service):
+    client, connections, _ = service
+    _, _, _, headers = await start(service)
+    assert (await callback(client, headers)).status == 200
+    revoke = connections.sso.revoke
+    async def unavailable(previous): raise AuthorizationUnavailable()
+    connections.sso.revoke = unavailable
+    assert await connections.disconnect("Ualice") is False
+    with pytest.raises(ConnectionRequired): connections.get("Ualice")
+    row = connections.store.db.execute("SELECT encrypted FROM connection_revocations").fetchone()
+    assert row is not None and b"refresh-secret" not in row[0]
+    connections.sso.revoke = revoke
+    connections.store.db.execute("UPDATE connection_revocations SET ready_at=0")
+    assert await connections.cleanup()
+    assert connections.sso.revoked == ["refresh-secret"]
+    assert connections.store.db.execute("SELECT COUNT(*) FROM connection_revocations").fetchone()[0] == 0
+
+
+def test_refresh_compares_the_refresh_generation_when_access_token_is_unchanged():
+    db = store()
+    initial = session()
+    db.save("T:alice", "alice", initial.credential, initial.expires_at, oauth=initial)
+    stale = db.get("T:alice")
+    db.refresh("T:alice", stale)
+    db.refresh("T:alice", stale, replace(initial, refresh_token="new-refresh"))
+    with pytest.raises(ConnectionRequired): db.refresh("T:alice", stale)
+    assert db.get("T:alice").oauth.refresh_token == "new-refresh"
+    assert db.get("T:alice").refreshing is False
+
+
+@pytest.mark.asyncio
+async def test_unavailable_origin_cannot_monopolize_revocation_batches(service):
+    import httpx2
+    from sso import LiteLLMSSO
+    _, connections, _ = service
+    requested = []
+    def respond(request):
+        requested.append(request.url.host)
+        if request.url.host == "old.example": raise httpx2.ConnectError("offline")
+        return httpx2.Response(200)
+    owner = connections.owner("Ualice")
+    for index in range(16):
+        connections.store.queue_revocation(owner, session(resource="https://old.example",
+            revocation_endpoint="https://old.example/revoke", refresh_token=f"old-refresh-{index}"))
+    connections.store.queue_revocation(owner, session(resource="https://new.example",
+        revocation_endpoint="https://new.example/revoke", refresh_token="new-refresh"))
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(respond)) as client:
+        connections.sso = LiteLLMSSO("https://new.example", connections.settings.public_url, client)
+        assert await connections.cleanup("Ualice") is False
+        assert requested == ["old.example"] * 16
+        assert await connections.cleanup("Ualice") is False
+    assert requested == ["old.example"] * 16 + ["new.example"]
+    assert connections.store.db.execute("SELECT COUNT(*) FROM connection_revocations").fetchone()[0] == 16

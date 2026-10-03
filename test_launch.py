@@ -163,7 +163,7 @@ async def test_disconnect_during_personal_key_verification_cannot_recreate_conne
         original = auth.require_slack_admin
         async def disconnect(*args):
             result = await original(*args)
-            connections.disconnect("Ualice")
+            await connections.disconnect("Ualice")
             return result
         auth.require_slack_admin = disconnect
         assert (await client.post(path, data=data, headers=headers)).status == 410

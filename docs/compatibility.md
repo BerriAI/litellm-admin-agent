@@ -38,24 +38,21 @@ routes present in the gateway's OpenAPI spec.
 
 ## Optional browser SSO
 
-Set `CONNECTION_AUTH_MODE=sso` only on a gateway that implements the hosted **proxy API** authorization-code flow:
+Set `CONNECTION_AUTH_MODE=sso` with a normal gateway release that supports delegated API OAuth. The app discovers standard authorization-server metadata at `/.well-known/oauth-authorization-server/oauth/api`, with issuer `<gateway>/oauth/api` and scope `proxy:admin`. A source commit or custom gateway image is not an installation dependency.
 
-- Dynamic client registration at `/register` with an exact HTTPS redirect URI and `token_endpoint_auth_method=none`.
-- `/authorize` using S256 PKCE, `resource=<gateway origin>` and the gateway’s configured SSO provider/consent.
-- `/token` returning `access_token`, `token_type=Bearer`, `user_id` and `expires_in`.
-- The gateway’s exact callback allowlist:
+Configure the app's exact HTTPS callback on the gateway:
 
 ```text
-LITELLM_PROXY_API_OAUTH_REDIRECT_URIS=https://admin.example.com/oauth/callback
+LITELLM_OAUTH_ADMIN_REDIRECT_URIS=https://admin.example.com/oauth/callback
 ```
 
-This setting is separate from MCP OAuth redirect configuration. Do not use wildcards. The gateway must already have its own SSO provider configured; this app does not need a separate Google/Okta client secret.
+The gateway retains its existing SSO provider configuration. The app needs no Google/Okta client secret or gateway MCP registration. It registers a public OAuth client, requests the gateway resource with S256 PKCE and `scope=proxy:admin`, and follows the gateway's normal sign-in and consent flow.
 
-The original integration used LiteLLM source commit `445c1cc0e04bd98e226c917232c60bab0f20d46a` for hosted callbacks. This repository does not assert that a particular published gateway image contains it. Verify support in your release or use personal-key mode; do not deploy the historical BerriAI private overlay as a general installation dependency.
+The token endpoint returns standard `access_token`, `token_type`, `expires_in`, `refresh_token` and `scope` fields. Identity and current admin permissions come from `/user/info`. The app stores encrypted credentials and renews them for at most 24 hours after connection; gateway policy can end access sooner. Renewal never extends that local deadline.
 
-A login round trip is required to validate SSO: send `connect`, sign in, confirm return to the browser page, and make a read request in Slack. An unsupported callback must fail closed. The app does not silently switch authentication modes.
+State, CSRF, exact Origin, secure cookies, expiring links and verified Slack email bind the connection to its requester. Disconnect removes local access immediately and revokes the gateway grant. Failed revocation stays encrypted for retry at startup or the next connection operation. Resources intentionally created through the app remain after disconnect.
 
-Sessions and pending PKCE material are encrypted. State, CSRF, exact Origin, secure cookies, expiring links and verified Slack email bind the flow to the requester. Refresh tokens are revoked when supported and discarded; the app retains only the time-limited access session. Disconnect deletes the stored copy rather than revoking the gateway session.
+After upgrading, existing SSO users reconnect once. Test a complete round trip: send `connect`, finish gateway sign-in, return to the app, make an admin read request, then disconnect. Unsupported gateways fail closed; the app never silently changes authentication modes.
 
 ## Optional gateway Agents / A2A
 

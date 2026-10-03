@@ -117,7 +117,7 @@ to apply. See the connector's own release notes when changing its version.
 | `/readyz` returns 503 | Slack app token / `connections:write`, outbound WSS, socket disconnects, persistent storage and process shutdown |
 | Connection denied | Current gateway `proxy_admin` role, exact email match, key ownership, account/key expiry and guest/bot status |
 | Browser session rejected | Open a fresh private link in one browser; preserve Origin; HTTPS is required; the public URL must be an origin without a path |
-| SSO callback rejected | Hosted proxy API OAuth support and the exact callback allowlist; use explicitly configured personal-key mode if unsupported |
+| SSO callback rejected | Normal gateway release with delegated API OAuth and `LITELLM_OAUTH_ADMIN_REDIRECT_URIS` set to this app’s exact callback |
 | Admin tools unavailable | Run `doctor.py`; check the installed connector, gateway APIs, personal credential and canonical tool allowlist; for hosted mode also check `ADMIN_MCP_URL` |
 | Writes refused | Read-only mode is enabled; changing model instructions cannot bypass it |
 | 429 / busy | Reduce traffic or tune bounded queue limits; this is a single-runner service |
