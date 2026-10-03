@@ -10,9 +10,9 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 from openai.types.responses import ResponseFunctionToolCall, ResponseOutputMessage, ResponseOutputText
 
-from auth import Principal
-from core import Journal, SecretBoundary
-from engine import AgentRunner
+from litellm_admin_agent.auth import Principal
+from litellm_admin_agent.core import Journal, SecretBoundary
+from litellm_admin_agent.engine import AgentRunner
 from test_agent import ScriptedModel, settings
 
 

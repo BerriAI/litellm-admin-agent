@@ -9,11 +9,11 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from cryptography.fernet import Fernet
 
-from auth import AccessDenied, EnterpriseRequired, Principal
-from connections import COOKIE, OAUTH_COOKIE, ConnectionRequired, ConnectionStore, Connections
-from core import Journal
+from litellm_admin_agent.auth import AccessDenied, EnterpriseRequired, Principal
+from litellm_admin_agent.connections import COOKIE, OAUTH_COOKIE, ConnectionRequired, ConnectionStore, Connections
+from litellm_admin_agent.core import Journal
 from test_agent import settings
-from sso import OAuthFlow, SignInResult
+from litellm_admin_agent.sso import OAuthFlow, SignInResult
 
 
 def store(path=":memory:", key=None):

@@ -4,9 +4,9 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-from auth import AccessDenied, EnterpriseRequired, Principal
-from connections import Connection, ConnectionRequired
-from core import Journal, SlackThreads
+from litellm_admin_agent.auth import AccessDenied, EnterpriseRequired, Principal
+from litellm_admin_agent.connections import Connection, ConnectionRequired
+from litellm_admin_agent.core import Journal, SlackThreads
 from test_agent import FakeAuthorizer, FakeConnections, FakeMCP, FakeSlack, ScriptedModel, channel, event
 
 
@@ -175,12 +175,12 @@ async def test_revocation_after_key_creation_stops_private_delivery():
 async def test_thread_tracking_expires_and_is_bounded(monkeypatch):
     journal = Journal(":memory:")
     subscriptions = SlackThreads(journal)
-    monkeypatch.setattr("core.time.time", lambda: 0)
+    monkeypatch.setattr("litellm_admin_agent.core.time.time", lambda: 0)
     await subscriptions.add("old")
-    monkeypatch.setattr("core.time.time", lambda: 7 * 86400)
+    monkeypatch.setattr("litellm_admin_agent.core.time.time", lambda: 7 * 86400)
     assert not await subscriptions.contains("old")
     for i in range(1001):
-        monkeypatch.setattr("core.time.time", lambda i=i: 7 * 86400 + i)
+        monkeypatch.setattr("litellm_admin_agent.core.time.time", lambda i=i: 7 * 86400 + i)
         await subscriptions.add(str(i))
     assert not await subscriptions.contains("0")
     assert await subscriptions.contains("1000")

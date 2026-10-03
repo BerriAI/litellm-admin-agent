@@ -12,10 +12,10 @@ from agents.usage import Usage
 from mcp import types
 from openai.types.responses import ResponseFunctionToolCall, ResponseOutputMessage, ResponseOutputText
 
-from app import build_listener
-from auth import AccessDenied
-from core import Journal
-from slack_tools import slack_user_tool
+from litellm_admin_agent.app import build_listener
+from litellm_admin_agent.auth import AccessDenied
+from litellm_admin_agent.core import Journal
+from litellm_admin_agent.slack_tools import slack_user_tool
 from test_agent import FakeAuthorizer, FakeConnections, FakeSlack, ScriptedModel, event, response, settings
 
 

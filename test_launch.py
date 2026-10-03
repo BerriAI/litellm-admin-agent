@@ -11,15 +11,15 @@ from cryptography.fernet import Fernet
 from dotenv import dotenv_values
 from mcp import types
 
-from agent import Settings
-from auth import Principal
-from connections import COOKIE, ConnectionRequired, Connections
-from core import Journal, ToolBridge, ToolOutcomeUnknown
-from engine import AgentBusy, AgentRunner
+from litellm_admin_agent.agent import Settings
+from litellm_admin_agent.auth import Principal
+from litellm_admin_agent.connections import COOKIE, ConnectionRequired, Connections
+from litellm_admin_agent.core import Journal, ToolBridge, ToolOutcomeUnknown
+from litellm_admin_agent.engine import AgentBusy, AgentRunner
 from setup_env import initialize
 from test_agent import FakeMCP, ScriptedModel, response, settings, tool
 from test_connections import Authorizer, SSO, store
-from web import create_web_app
+from litellm_admin_agent.web import create_web_app
 
 
 def valid_settings(tmp_path):
@@ -269,8 +269,8 @@ async def test_shutdown_cancels_active_run_without_releasing_its_lock_early():
 @pytest.mark.asyncio
 async def test_agentchat_service_readiness_and_shutdown(tmp_path, monkeypatch, startup_fails):
     import signal
-    import app as service
-    import web as web_service
+    import litellm_admin_agent.app as service
+    import litellm_admin_agent.web as web_service
 
     config = valid_settings(tmp_path)
     monkeypatch.setattr(service.Settings, "read", lambda: config)

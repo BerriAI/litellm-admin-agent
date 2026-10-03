@@ -7,8 +7,8 @@ from urllib.parse import parse_qs, urlparse
 import httpx2
 import pytest
 
-from auth import AuthorizationUnavailable
-from sso import OAuthFlow, LiteLLMSSO, SignInExpired
+from litellm_admin_agent.auth import AuthorizationUnavailable
+from litellm_admin_agent.sso import OAuthFlow, LiteLLMSSO, SignInExpired
 
 GATEWAY = "https://gateway.example"
 APP = "https://admin.example"

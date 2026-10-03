@@ -19,7 +19,7 @@ from mcp.client.stdio import stdio_client
 from litellm_admin_mcp.catalog import BY_NAME
 from mcp.client.streamable_http import streamable_http_client
 
-from core import ToolBridge
+from litellm_admin_agent.core import ToolBridge
 from cryptography.fernet import Fernet
 
 
@@ -128,6 +128,7 @@ class Settings:
     @classmethod
     def read(cls) -> "Settings":
         model_url = os.getenv("LITELLM_BASE_URL", "").rstrip("/")
+        connection_auth_mode = os.getenv("CONNECTION_AUTH_MODE", "sso")
         if os.getenv("LITELLM_MCP_URL", ""):
             raise ValueError("Remove the legacy LITELLM_MCP_URL. The agent now launches LiteLLM Admin MCP locally; use ADMIN_MCP_URL only for a standalone hosted connector.")
         tool_names = frozenset(x.strip() for x in os.getenv("ADMIN_TOOL_NAMES", "").split(",") if x.strip())
@@ -139,9 +140,9 @@ class Settings:
             db_path=os.getenv("STATE_DB", "data/events.sqlite3"),
             encryption_key=os.getenv("CREDENTIAL_ENCRYPTION_KEY", ""),
             service_token=os.getenv("ADMIN_AGENT_SERVICE_TOKEN", ""),
-            public_url=(os.getenv("AGENT_PUBLIC_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").rstrip("/"),
+            public_url=(os.getenv("AGENT_PUBLIC_URL") or os.getenv("RENDER_EXTERNAL_URL") or (model_url.removesuffix("/v1") if connection_auth_mode == "native" else "")).rstrip("/"),
             slack_enabled=env_bool("SLACK_ENABLED", True),
-            connection_auth_mode=os.getenv("CONNECTION_AUTH_MODE", "sso"),
+            connection_auth_mode=connection_auth_mode,
             read_only=env_bool("ADMIN_READ_ONLY", False),
             max_pending_requests=int(os.getenv("MAX_PENDING_REQUESTS", "8")),
             queue_timeout_seconds=float(os.getenv("QUEUE_TIMEOUT_SECONDS", "30")),
@@ -165,8 +166,8 @@ class Settings:
             raise ValueError("ADMIN_TOOL_NAMES must use canonical LiteLLM Admin MCP names; see the migration guide.")
         trusted_url(self.gateway_url, "Gateway URL", origin_only=True)
         trusted_url(self.public_url, "AGENT_PUBLIC_URL", origin_only=True)
-        if self.connection_auth_mode not in {"sso", "api_key"}:
-            raise ValueError("CONNECTION_AUTH_MODE must be sso or api_key")
+        if self.connection_auth_mode not in {"sso", "api_key", "native"}:
+            raise ValueError("CONNECTION_AUTH_MODE must be sso, api_key or native")
         try:
             Fernet(self.encryption_key.encode())
         except (ValueError, TypeError):

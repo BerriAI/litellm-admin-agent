@@ -1,11 +1,11 @@
 from types import SimpleNamespace
 
-import auth as auth_module
+import litellm_admin_agent.auth as auth_module
 
 import httpx2
 import pytest
 
-from auth import AccessDenied, AdminAuthorizer, AuthorizationUnavailable, EnterpriseRequired
+from litellm_admin_agent.auth import AccessDenied, AdminAuthorizer, AuthorizationUnavailable, EnterpriseRequired
 
 
 class Client:

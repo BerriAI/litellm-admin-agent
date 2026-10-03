@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass, field
 from urllib.parse import urlencode
 
-from auth import AuthorizationUnavailable
+from litellm_admin_agent.auth import AuthorizationUnavailable
 
 
 class SignInExpired(Exception):

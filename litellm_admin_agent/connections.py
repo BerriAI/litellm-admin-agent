@@ -15,8 +15,8 @@ from pathlib import Path
 from aiohttp import web
 from cryptography.fernet import Fernet, InvalidToken
 
-from auth import AccessDenied, AuthorizationUnavailable, EnterpriseRequired
-from sso import OAuthFlow, SignInExpired
+from litellm_admin_agent.auth import AccessDenied, AuthorizationUnavailable, EnterpriseRequired
+from litellm_admin_agent.sso import OAuthFlow, SignInExpired
 
 
 class ConnectionRequired(Exception):

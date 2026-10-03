@@ -37,6 +37,16 @@ routes present in the gateway's OpenAPI spec.
   entitlements and validation. Registering a deployment is not an inference test.
 - `ADMIN_READ_ONLY=true` disables model creation while retaining model lookups.
 
+## Native Enterprise deployment
+
+A LiteLLM image that includes the native Slack integration can run this package as a dedicated worker with `CONNECTION_AUTH_MODE=native`. The gateway and worker use the same `ADMIN_AGENT_SERVICE_TOKEN`, and the gateway sets `LITELLM_ADMIN_AGENT_URL` to the worker's private HTTP address. Keep that address on the deployment network; do not add a public ingress for the worker
+
+In this mode, Slack links open `/liteadmin/slack/connect/` on the existing gateway. The user signs in through the gateway's normal SSO, confirms the connection, and the gateway hands a personal session to the worker over the private network. The worker independently verifies the user's current admin role and matching Slack email before consuming the link. Sessions expire after 24 hours; `connect` renews them, while `disconnect` removes the worker's saved copy and invalidates pending links. It does not revoke an exported session credential at the gateway
+
+There is no hosted OAuth callback or separate agent domain. `AGENT_PUBLIC_URL` defaults to the gateway origin when omitted. The worker still needs outbound access to Slack and HTTPS access to the gateway. Run one worker per Slack app and preserve its encrypted state volume and encryption key
+
+Install the package with its locked dependencies, then run `litellm-admin-agent --web`. The source checkout's `python app.py --web` remains supported
+
 ## Optional browser SSO
 
 Set `CONNECTION_AUTH_MODE=sso` only on a gateway that implements the hosted **proxy API** authorization-code flow:

@@ -5,10 +5,10 @@ import pytest
 import httpx2
 from openai import APIStatusError
 
-import agent
-from auth import Principal
-from core import Journal
-from engine import AgentRunner
+from litellm_admin_agent import agent
+from litellm_admin_agent.auth import Principal
+from litellm_admin_agent.core import Journal
+from litellm_admin_agent.engine import AgentRunner
 from test_agent import FakeMCP, ScriptedModel, settings
 
 
@@ -102,7 +102,7 @@ async def test_no_credential_never_falls_back_to_global_environment(monkeypatch)
 
 @pytest.mark.asyncio
 async def test_slack_disconnect_during_run_stops_tools_and_delivery():
-    from connections import ConnectionRequired
+    from litellm_admin_agent.connections import ConnectionRequired
     from test_agent import FakeAuthorizer, FakeConnections, FakeSlack, channel, event
     class Connections(FakeConnections):
         revoked = False

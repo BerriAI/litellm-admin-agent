@@ -7,3 +7,7 @@ __pycache__/
 .venv/
 *.sqlite3*
 *.log
+
+*.egg-info/
+build/
+dist/
