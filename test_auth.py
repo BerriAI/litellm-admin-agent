@@ -1,9 +1,11 @@
 from types import SimpleNamespace
 
+import auth as auth_module
+
 import httpx2
 import pytest
 
-from auth import AccessDenied, AdminAuthorizer, AuthorizationUnavailable
+from auth import AccessDenied, AdminAuthorizer, AuthorizationUnavailable, EnterpriseRequired
 
 
 class Client:
@@ -31,14 +33,61 @@ def info(role="proxy_admin", **extra):
     return {"user_id": "admin-id", "user_info": account(role, **extra)}
 
 
+ENTERPRISE = {"has_license": True, "license_type": "enterprise"}
+
+
 @pytest.mark.asyncio
 async def test_caller_bearer_is_used_and_service_key_never_substituted():
-    client = Client(info())
+    client = Client(info(), ENTERPRISE)
     principal = await auth(client).require_gateway_admin("caller-secret")
     assert principal.user_id == "admin-id"
-    assert client.calls[0][1]["headers"] == {"Authorization": "Bearer caller-secret"}
-    assert client.calls[0][1]["params"] is None
-    assert client.calls[0][1]["follow_redirects"] is False
+    assert [url for url, _ in client.calls] == ["https://gateway.example.com/user/info",
+                                                "https://gateway.example.com/health/license"]
+    for _, kwargs in client.calls:
+        assert kwargs["headers"] == {"Authorization": "Bearer caller-secret"}
+        assert kwargs["params"] is None
+        assert kwargs["follow_redirects"] is False
+
+
+@pytest.mark.parametrize("license", [{"has_license": False, "license_type": "community"},
+    {"has_license": True, "license_type": "community"}, {"license_type": "Enterprise"}, {}])
+@pytest.mark.asyncio
+async def test_gateway_without_enterprise_license_denied(license):
+    with pytest.raises(EnterpriseRequired):
+        await auth(Client(info(), license)).require_gateway_admin("caller")
+
+
+@pytest.mark.asyncio
+async def test_enterprise_license_is_cached_until_it_expires(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(auth_module.time, "monotonic", lambda: now[0])
+    client = Client(info(), ENTERPRISE, info(), info(), (200, {"license_type": "community"}))
+    authorizer = auth(client)
+    await authorizer.require_gateway_admin("caller")
+    now[0] += AdminAuthorizer.LICENSE_TTL - 1
+    await authorizer.require_gateway_admin("caller")
+    assert [url.rsplit("/", 1)[-1] for url, _ in client.calls] == ["info", "license", "info"]
+    now[0] += 1
+    with pytest.raises(EnterpriseRequired):
+        await authorizer.require_gateway_admin("caller")
+    assert [url.rsplit("/", 1)[-1] for url, _ in client.calls][-2:] == ["info", "license"]
+
+
+@pytest.mark.asyncio
+async def test_missing_enterprise_license_is_not_cached():
+    client = Client(info(), {"license_type": "community"}, info(), ENTERPRISE)
+    authorizer = auth(client)
+    with pytest.raises(EnterpriseRequired):
+        await authorizer.require_gateway_admin("caller")
+    assert (await authorizer.require_gateway_admin("caller")).user_id == "admin-id"
+    assert [url.rsplit("/", 1)[-1] for url, _ in client.calls] == ["info", "license", "info", "license"]
+
+
+@pytest.mark.parametrize("license", [(500, {}), (404, {}), TimeoutError(), []])
+@pytest.mark.asyncio
+async def test_license_errors_fail_closed(license):
+    with pytest.raises(AuthorizationUnavailable):
+        await auth(Client(info(), license)).require_gateway_admin("caller")
 
 
 @pytest.mark.parametrize("data", [info("internal_user"), info("proxy_admin_viewer"), info("team_admin"),
@@ -74,10 +123,10 @@ class Slack:
 
 @pytest.mark.asyncio
 async def test_slack_uses_personal_credential_and_matches_verified_email():
-    client = Client(info())
+    client = Client(info(), ENTERPRISE)
     principal = await auth(client).require_slack_admin("Uadmin", Slack(), "personal-key")
     assert principal.actor == "slack:Uadmin:admin-id"
-    assert len(client.calls) == 1
+    assert len(client.calls) == 2
     assert client.calls[0][1]["params"] is None
     assert client.calls[0][1]["headers"] == {"Authorization": "Bearer personal-key"}
 
@@ -96,7 +145,7 @@ async def test_slack_guest_bot_wrong_workspace_and_missing_email_denied(extra):
 @pytest.mark.asyncio
 async def test_wrong_person_or_non_admin_key_denied(data):
     with pytest.raises(AccessDenied):
-        await auth(Client(data)).require_slack_admin("Uadmin", Slack(), "key")
+        await auth(Client(data, ENTERPRISE)).require_slack_admin("Uadmin", Slack(), "key")
 
 
 @pytest.mark.asyncio

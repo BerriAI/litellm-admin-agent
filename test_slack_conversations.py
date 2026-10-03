@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-from auth import AccessDenied, Principal
+from auth import AccessDenied, EnterpriseRequired, Principal
 from connections import Connection, ConnectionRequired
 from core import Journal, SlackThreads
 from test_agent import FakeAuthorizer, FakeConnections, FakeMCP, FakeSlack, ScriptedModel, channel, event
@@ -252,3 +252,15 @@ async def test_history_failure_does_not_run_operations_without_context():
     transport = channel(client, journal, model, authorizer=FakeAuthorizer(), connections=FakeConnections())
     await transport.handle_event(followup(text='target@example.com'))
     assert not model.inputs and 'haven’t run any operations' in client.posts[-1]['text']
+
+
+@pytest.mark.asyncio
+async def test_gateway_without_enterprise_license_gets_an_enterprise_reply_and_never_runs():
+    class Community:
+        async def require_slack_admin(self, user, client, credential): raise EnterpriseRequired()
+    client, model = FakeSlack(), ScriptedModel()
+    transport = channel(client, Journal(":memory:"), model,
+                        authorizer=Community(), connections=FakeConnections())
+    await transport.handle_event(mention())
+    assert client.posts[-1]["text"] == EnterpriseRequired.message
+    assert not model.inputs

@@ -20,7 +20,7 @@ from agentchat.integrations import to_openai_input
 from slack_sdk.web.async_client import AsyncWebClient
 
 from agent import Settings, mcp_session
-from auth import AccessDenied, AdminAuthorizer, AuthorizationUnavailable
+from auth import AccessDenied, AdminAuthorizer, AuthorizationUnavailable, EnterpriseRequired
 from core import Journal, SlackThreads, all_tools
 from connections import ConnectionRequired, ConnectionStore, Connections
 from engine import AgentBusy, AgentRunner
@@ -160,7 +160,8 @@ def build_listener(settings: Settings, journal: Journal, client, model=None, con
             status = "denied" if isinstance(exc, AccessDenied) else "authorization_unavailable"
             if not message.addressed and not ran:
                 return
-            answer = ("Your LiteLLM admin session couldn’t be verified. Your Slack email must match an active LiteLLM proxy-admin account. Send connect to reconnect."
+            answer = (EnterpriseRequired.message if isinstance(exc, EnterpriseRequired)
+                      else "Your LiteLLM admin session couldn’t be verified. Your Slack email must match an active LiteLLM proxy-admin account. Send connect to reconnect."
                       if isinstance(exc, AccessDenied) else "I can’t verify your admin access right now. Please try again later.")
             if pending or ran:
                 answer += " The run stopped; check any requested changes in the gateway before retrying."

@@ -1,6 +1,7 @@
 """Verify real callers against the gateway before any model or administrative tool."""
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -16,6 +17,12 @@ class AuthorizationUnavailable(Exception):
     """Identity could not be verified; fail closed without exposing upstream details."""
 
 
+class EnterpriseRequired(AccessDenied):
+    """The gateway does not report a LiteLLM Enterprise license."""
+
+    message = "LiteLLM Admin Agent requires a LiteLLM Enterprise license on your gateway. Contact LiteLLM to enable Enterprise, then try again."
+
+
 @dataclass(frozen=True)
 class Principal:
     user_id: str
@@ -29,6 +36,8 @@ class Principal:
 
 
 class AdminAuthorizer:
+    LICENSE_TTL = 3600
+
     def __init__(self, base_url: str, workspace: str, client: Any):
         parsed = urlparse(base_url)
         if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
@@ -36,6 +45,7 @@ class AdminAuthorizer:
         self.base_url = base_url.rstrip("/")
         self.workspace = workspace
         self.client = client
+        self._enterprise_until = 0.0
 
     async def _get(self, path: str, key: str, params: dict | None = None) -> dict:
         try:
@@ -75,7 +85,16 @@ class AdminAuthorizer:
         user = self._admin(data.get("user_info"))
         if data.get("user_id") != user["user_id"]:
             raise AccessDenied()
+        await self._require_enterprise(bearer)
         return Principal(user["user_id"], str(user.get("user_email") or ""), "gateway", user["user_id"])
+
+    async def _require_enterprise(self, bearer: str) -> None:
+        # The license is gateway-wide; only a confirmed Enterprise answer is cached.
+        if time.monotonic() < self._enterprise_until:
+            return
+        if (await self._get("/health/license", bearer)).get("license_type") != "enterprise":
+            raise EnterpriseRequired()
+        self._enterprise_until = time.monotonic() + self.LICENSE_TTL
 
     async def slack_email(self, slack_user: str, slack: Any) -> str:
         try:

@@ -5,7 +5,7 @@ import pytest
 import pytest_asyncio
 from aiohttp.test_utils import TestClient, TestServer
 
-from auth import AccessDenied, AuthorizationUnavailable, Principal
+from auth import AccessDenied, AuthorizationUnavailable, EnterpriseRequired, Principal
 from core import Journal, ToolBridge
 from engine import AgentRunner, Outcome
 from test_agent import FakeMCP, ScriptedModel, settings, tool
@@ -17,6 +17,7 @@ class Authorizer:
     async def require_gateway_admin(self, bearer):
         self.calls.append(bearer)
         if bearer == "unavailable": raise AuthorizationUnavailable()
+        if bearer == "community": raise EnterpriseRequired()
         if bearer not in ("admin1", "admin2") or self.revoked: raise AccessDenied()
         return Principal(bearer, bearer + "@example.com", "gateway", bearer)
 
@@ -185,3 +186,12 @@ def test_registration_preserves_caller_authorization_and_is_not_public():
     assert payload["static_headers"] == {"X-Admin-Agent-Token": "s" * 48}
     assert payload["litellm_params"] == {"make_public": False}
     assert "api_key" not in payload["litellm_params"]
+
+
+@pytest.mark.asyncio
+async def test_gateway_without_enterprise_license_is_refused_before_running(service):
+    client, auth, runner, journal = service
+    result = await client.post("/a2a", headers=headers(bearer="community"), json=request())
+    assert result.status == 403
+    assert (await result.json())["error"]["message"] == EnterpriseRequired.message
+    assert not runner.calls

@@ -5,6 +5,7 @@ This is a single-tenant service: one trusted HTTPS gateway origin and one Slack 
 The gateway must support:
 
 - `/user/info` with the supplied bearer, returning matching top-level/user-record IDs and a live `proxy_admin` role, with the user’s actual email.
+- A LiteLLM Enterprise license. `/health/license` with the supplied bearer must report `license_type: "enterprise"`; otherwise every request is refused. A confirmed license is cached for one hour, so removing it takes up to an hour to stop the agent; adding one takes effect on the next request.
 - `/v1/models` and chat completions using that same personal credential. Choose a model with reliable tool calling.
 - `/openapi.json` and the management endpoints you want to use. The connector
   discovers exact argument schemas and exposes only reviewed routes present on
