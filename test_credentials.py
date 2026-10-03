@@ -207,3 +207,31 @@ async def test_real_connector_returns_key_only_to_private_delivery():
     assert result.status == "completed" and writes == [body]
     assert list(result.secrets.values()) == [returned_key]
     assert returned_key not in json.dumps(model.inputs) and returned_key not in result.answer
+
+
+@pytest.mark.asyncio
+async def test_queued_run_prepares_fresh_credential_before_model_and_tools():
+    import asyncio
+    import time
+    sent = []
+    @asynccontextmanager
+    async def connector(config, credential):
+        sent.append(credential)
+        yield FakeMCP()
+    @asynccontextmanager
+    async def model(config, credential):
+        sent.append(credential)
+        yield ScriptedModel()
+    async def verify(): pass
+    async def prepare():
+        sent.append("prepared")
+        return "renewed", time.time() + 300
+    runner = AgentRunner(settings(), Journal(":memory:"), connect=connector, make_model=model)
+    await runner.lock.acquire()
+    pending = asyncio.create_task(runner.execute("Read budget", Principal("alice", "", "gateway", "alice"),
+        "thread", "event", verify, "expired-while-queued", prepare=prepare))
+    await asyncio.sleep(0)
+    assert sent == []
+    runner.lock.release()
+    assert (await pending).status == "completed"
+    assert sent == ["prepared", "renewed", "renewed"]

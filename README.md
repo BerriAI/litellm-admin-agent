@@ -119,7 +119,7 @@ allowlist and read-only settings also apply.
 - Enter your personal gateway key or sign in with SSO, depending on the method you chose for the deployment.
 - Return to Slack and ask: **“List my teams and their current budgets.”**
 - Check that a gateway admin can use the agent and that a regular gateway user cannot.
-- Send **disconnect** to remove your saved connection. To revoke the credential itself, revoke it in LiteLLM.
+- Send **disconnect** to remove your saved connection and revoke its SSO grant. Personal API keys are revoked separately in LiteLLM.
 
 Mention **@LiteLLM Admin** in any channel where the bot has been added. It replies
 in a thread; continue there without mentioning it again. DMs also retain context.
