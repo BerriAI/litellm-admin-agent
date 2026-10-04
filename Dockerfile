@@ -3,7 +3,9 @@ ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 OPENAI_AGENTS_DISABLE_TRACING=1
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir --require-hashes -r requirements.txt
-COPY LICENSE agent.py app.py auth.py core.py engine.py web.py connections.py sso.py slack_tools.py connect.js doctor.py ./
+COPY LICENSE README.md pyproject.toml requirements.in app.py doctor.py ./
+COPY litellm_admin_agent ./litellm_admin_agent
+RUN pip install --no-deps .
 RUN useradd --uid 10001 --create-home agent && mkdir /var/data && chown agent:agent /var/data
 USER agent
 ENV STATE_DB=/var/data/events.sqlite3 PORT=10000

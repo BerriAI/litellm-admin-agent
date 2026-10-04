@@ -8,8 +8,8 @@ import os
 import httpx2
 from dotenv import load_dotenv
 
-from agent import Settings, trusted_url
-from web import agent_card
+from litellm_admin_agent.agent import Settings, trusted_url
+from litellm_admin_agent.web import agent_card
 
 
 def registration(settings):

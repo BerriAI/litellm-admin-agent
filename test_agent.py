@@ -12,10 +12,10 @@ from openai.types.responses import ResponseFunctionToolCall, ResponseOutputMessa
 
 from agentchat.channels import Slack
 
-from app import Settings, build_listener
-from auth import AccessDenied, Principal
-from connections import Connection
-from core import Journal, SecretBoundary, ToolBridge, ToolOutcomeUnknown, SlackThreads
+from litellm_admin_agent.app import Settings, build_listener
+from litellm_admin_agent.auth import AccessDenied, Principal
+from litellm_admin_agent.connections import Connection
+from litellm_admin_agent.core import Journal, SecretBoundary, ToolBridge, ToolOutcomeUnknown, SlackThreads
 
 
 def event(event_id="Ev1", user="Uadmin", team="Tberri", channel_type="im"):

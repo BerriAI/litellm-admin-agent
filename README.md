@@ -15,6 +15,8 @@ Manage your LiteLLM gateway from Slack DMs and channel threads, using the standa
 - Get permission to create and install a Slack app in your workspace.
 - Install Python 3.12 for the setup commands. Choose Docker Compose or a paid Render service with persistent storage for hosting.
 
+For a gateway that includes native Slack support, use the [native Enterprise deployment](docs/compatibility.md#native-enterprise-deployment). It uses the existing gateway login and does not need a separate agent domain
+
 ## 1. Create your configuration
 
 ```sh

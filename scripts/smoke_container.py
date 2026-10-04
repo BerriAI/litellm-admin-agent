@@ -46,13 +46,13 @@ try:
     with urllib.request.urlopen(f"http://127.0.0.1:{port}/.well-known/agent-card.json") as response:
         assert json.load(response)["url"] == "https://admin.example.com/a2a"
     # Check every formerly missing runtime asset inside the actual image.
-    docker("exec", NAME, "python", "-c", "import sso, litellm_admin_mcp.server; from pathlib import Path; assert Path('connect.js').is_file(); assert not Path('.env').exists()")
+    docker("exec", NAME, "python", "-c", "import litellm_admin_agent.sso, litellm_admin_mcp.server; from importlib.resources import files; from pathlib import Path; assert files('litellm_admin_agent').joinpath('connect.js').is_file(); assert not Path('.env').exists()")
     assert docker("exec", NAME, "id", "-u") == "10001"
-    docker("exec", NAME, "python", "-c", "from core import Journal; j=Journal('/var/data/events.sqlite3'); assert j.claim('smoke-event','smoke-actor')")
+    docker("exec", NAME, "python", "-c", "from litellm_admin_agent.core import Journal; j=Journal('/var/data/events.sqlite3'); assert j.claim('smoke-event','smoke-actor')")
     docker("restart", "--time", "25", NAME)
     port = docker("port", NAME, "10000/tcp").rsplit(":", 1)[1]
     wait_ready(port)
-    docker("exec", NAME, "python", "-c", "from core import Journal; j=Journal('/var/data/events.sqlite3'); assert not j.claim('smoke-event','smoke-actor')")
+    docker("exec", NAME, "python", "-c", "from litellm_admin_agent.core import Journal; j=Journal('/var/data/events.sqlite3'); assert not j.claim('smoke-event','smoke-actor')")
     docker("exec", NAME, "python", "doctor.py", "--offline")
     print("Container smoke passed: non-root startup, runtime assets, readiness, discovery, private build context and replay protection across restart.")
 except Exception:

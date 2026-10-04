@@ -11,9 +11,9 @@ from typing import Awaitable, Callable
 from agents import FunctionTool, Runner, RunConfig
 from agentchat.integrations import should_reply
 
-from agent import Settings, agent_for, mcp_session, model_session
-from auth import Principal
-from core import Journal, ToolBridge, all_tools
+from litellm_admin_agent.agent import Settings, agent_for, mcp_session, model_session
+from litellm_admin_agent.auth import Principal
+from litellm_admin_agent.core import Journal, ToolBridge, all_tools
 
 
 @dataclass

@@ -5,11 +5,11 @@ import pytest
 import pytest_asyncio
 from aiohttp.test_utils import TestClient, TestServer
 
-from auth import AccessDenied, AuthorizationUnavailable, EnterpriseRequired, Principal
-from core import Journal, ToolBridge
-from engine import AgentRunner, Outcome
+from litellm_admin_agent.auth import AccessDenied, AuthorizationUnavailable, EnterpriseRequired, Principal
+from litellm_admin_agent.core import Journal, ToolBridge
+from litellm_admin_agent.engine import AgentRunner, Outcome
 from test_agent import FakeMCP, ScriptedModel, settings, tool
-from web import create_web_app
+from litellm_admin_agent.web import create_web_app
 
 
 class Authorizer:

@@ -9,9 +9,9 @@ import httpx2
 from dotenv import load_dotenv
 from slack_sdk.web.async_client import AsyncWebClient
 
-from agent import Settings, mcp_session
-from auth import AdminAuthorizer, EnterpriseRequired
-from core import all_tools, is_read_only
+from litellm_admin_agent.agent import Settings, mcp_session
+from litellm_admin_agent.auth import AdminAuthorizer, EnterpriseRequired
+from litellm_admin_agent.core import all_tools, is_read_only
 from litellm_admin_mcp.catalog import BY_NAME
 
 

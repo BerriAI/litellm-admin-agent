@@ -9,9 +9,9 @@ from urllib.parse import urlparse
 
 from aiohttp import web
 
-from auth import AccessDenied, AuthorizationUnavailable, EnterpriseRequired
-from engine import AgentBusy
-from connections import page
+from litellm_admin_agent.auth import AccessDenied, AuthorizationUnavailable, EnterpriseRequired
+from litellm_admin_agent.engine import AgentBusy
+from litellm_admin_agent.connections import page
 
 
 def agent_card(public_url: str) -> dict:
