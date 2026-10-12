@@ -71,7 +71,8 @@ class ScriptedModel(Model):
     """Exercise the real Agents SDK loop with deterministic model responses."""
     def __init__(self): self.inputs = []; self.index = 0
     async def get_response(self, system_instructions, input, model_settings, tools, output_schema, handoffs, tracing, **kwargs):
-        if output_schema is not None:
+        if not tools:
+            assert output_schema is None
             return ModelResponse(output=[ResponseOutputMessage(type="message", id="route", role="assistant",
                 status="completed", content=[ResponseOutputText(type="output_text", text='{"reply":true}', annotations=[])])],
                 usage=Usage(), response_id="route")

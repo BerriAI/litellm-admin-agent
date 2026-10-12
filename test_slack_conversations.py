@@ -215,21 +215,28 @@ async def test_failed_private_delivery_is_reported_without_leaking_or_repeating_
 
 
 @pytest.mark.asyncio
-async def test_side_conversation_is_routed_without_tools_or_a_slack_reply():
+@pytest.mark.parametrize("decision,status", [
+    ('{"reply":false}', 'ignored'),
+    ('{"reply":"true"}', 'failed'),
+    ('not JSON', 'failed'),
+])
+async def test_side_conversation_or_invalid_decision_never_reaches_tools(decision, status):
     from agents import ModelResponse
     from agents.usage import Usage
     from openai.types.responses import ResponseOutputMessage, ResponseOutputText
 
     class RoutingModel(ScriptedModel):
         async def get_response(self, input, tools, output_schema, **kwargs):
-            assert output_schema is not None and tools == []
+            assert output_schema is None and tools == []
             assert 'Create a team key' in json.dumps(input)
             return ModelResponse(output=[ResponseOutputMessage(type='message', id='routing',
                 role='assistant', status='completed', content=[ResponseOutputText(type='output_text',
-                text='{"reply":false}', annotations=[])])], usage=Usage(), response_id='routing')
+                text=decision, annotations=[])])], usage=Usage(), response_id='routing')
 
+    connections = []
     @asynccontextmanager
     async def forbidden_connect(*args):
+        connections.append(True)
         raise AssertionError('Side conversation reached admin tools')
         yield
 
@@ -239,8 +246,12 @@ async def test_side_conversation_is_routed_without_tools_or_a_slack_reply():
     transport = channel(client, journal, RoutingModel(), forbidden_connect,
                         authorizer=FakeAuthorizer(), connections=FakeConnections())
     await transport.handle_event(followup(text='which model is this <@UTin>?'))
-    assert client.posts == [] and client.updates == []
-    assert journal.db.execute('SELECT DISTINCT status FROM events').fetchall() == [('ignored',)]
+    assert connections == []
+    if status == 'ignored':
+        assert client.posts == [] and client.updates == []
+    else:
+        assert 'couldn’t complete this request' in json.dumps(client.posts, ensure_ascii=False)
+    assert journal.db.execute('SELECT DISTINCT status FROM events').fetchall() == [(status,)]
 
 
 @pytest.mark.asyncio
