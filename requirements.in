@@ -1,4 +1,4 @@
-openai-agents==0.22.3
+openai-agents==0.23.1
 openai==3.16.2
 mcp==2.2.0
 httpx2==2.13.0
