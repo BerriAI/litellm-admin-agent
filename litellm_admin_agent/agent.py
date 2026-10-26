@@ -130,11 +130,14 @@ class Settings:
         model_url = os.getenv("LITELLM_BASE_URL", "").rstrip("/")
         connection_auth_mode = os.getenv("CONNECTION_AUTH_MODE", "sso")
         if os.getenv("LITELLM_MCP_URL", ""):
-            raise ValueError("Remove the legacy LITELLM_MCP_URL. The agent now launches LiteLLM Admin MCP locally; use ADMIN_MCP_URL only for a standalone hosted connector.")
+            raise ValueError("Remove the legacy LITELLM_MCP_URL. Use ADMIN_MCP_URL for an explicit hosted connector.")
         tool_names = frozenset(x.strip() for x in os.getenv("ADMIN_TOOL_NAMES", "").split(",") if x.strip())
         return cls(
             workspace=os.getenv("SLACK_WORKSPACE_ID", ""),
-            mcp_url=os.getenv("ADMIN_MCP_URL", ""), tool_names=tool_names,
+            mcp_url=os.getenv("ADMIN_MCP_URL") or (
+                model_url.removesuffix("/v1") + "/admin/mcp" if connection_auth_mode == "native" else ""
+            ),
+            tool_names=tool_names,
             model_url=model_url, model=os.getenv("LITELLM_MODEL", ""),
             bot_token=os.getenv("SLACK_BOT_TOKEN", ""), app_token=os.getenv("SLACK_APP_TOKEN", ""),
             db_path=os.getenv("STATE_DB", "data/events.sqlite3"),
@@ -188,7 +191,7 @@ async def mcp_session(settings: Settings, credential: str):
     if settings.mcp_url:
         async with httpx2.AsyncClient(
             headers={"Authorization": f"Bearer {credential}"},
-            timeout=httpx2.Timeout(60, read=120), follow_redirects=False,
+            timeout=httpx2.Timeout(60, read=120), follow_redirects=False, max_redirects=0,
         ) as client:
             async with streamable_http_client(settings.mcp_url, http_client=client) as streams:
                 async with ClientSession(*streams, read_timeout_seconds=120) as session:

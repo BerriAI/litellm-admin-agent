@@ -1,6 +1,7 @@
 # LiteLLM Admin Agent
 
-Manage your LiteLLM gateway from Slack DMs and channel threads, using the standalone
+Manage your LiteLLM gateway from Slack DMs and channel threads. Native deployments
+use the gateway's built-in `/admin/mcp` endpoint. Standalone deployments use the
 [LiteLLM Admin MCP](https://github.com/BerriAI/litellm-admin-mcp) connector.
 
 - Ask about models, keys, teams, budgets and spending.
@@ -65,6 +66,10 @@ You choose **one login method for the deployment**. Each Slack user connects the
 - Keep the service token that Render generates. You need it for [optional gateway Agents registration](docs/compatibility.md#optional-gateway-agents--a2a).
 
 ### Docker Compose
+
+Published GitHub releases with tags matching `v<project version>` build and test native amd64 and arm64 images, then publish `ghcr.io/berriai/litellm-admin-agent:<version>`. Pin a published version or digest when deploying. The first publication requires this workflow to land and a release to be published. Until then, build from the reviewed source revision with the commands below
+
+For the gateway's native Slack integration, use the [native deployment instructions](docs/compatibility.md#native-enterprise-deployment). The worker has its own image and release cycle. Enabling `/admin/mcp` alone does not require a worker
 
 - Set `AGENT_PUBLIC_URL` in `.env` to the HTTPS address you plan to use.
 - Run:

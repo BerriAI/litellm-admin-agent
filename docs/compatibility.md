@@ -13,11 +13,13 @@ The gateway must support:
   until reviewed.
 - Network access from the agent (or hosted connector) to those gateway APIs.
 
-The separately versioned [LiteLLM Admin MCP](https://github.com/BerriAI/litellm-admin-mcp)
-package owns the tool catalog and management API integration. The agent uses its
-standard MCP interface over a local subprocess by default, or Streamable HTTP
-when `ADMIN_MCP_URL` is configured. Native gateway MCP registration and access to
-an agent `/admin-api` backend are no longer required.
+In standalone `api_key` and `sso` modes, the separately versioned
+[LiteLLM Admin MCP](https://github.com/BerriAI/litellm-admin-mcp) package provides
+the tool catalog and management API integration. Those modes use its standard
+MCP interface over a local subprocess by default, or Streamable HTTP when
+`ADMIN_MCP_URL` is configured. Native mode uses the gateway endpoint as described
+[below](#native-enterprise-deployment). No mode requires the former agent
+`/admin-api` backend
 
 Personal-key mode (`CONNECTION_AUTH_MODE=api_key`) does not require gateway OAuth. Each key must belong to an active proxy-admin user, have model access, and match the Slack user’s verified email. Stored connections expire after 24 hours; the gateway’s own key expiry and revocation can shorten that. Connecting does not broaden a key’s gateway permissions.
 
@@ -39,11 +41,13 @@ routes present in the gateway's OpenAPI spec.
 
 ## Native Enterprise deployment
 
-A LiteLLM image that includes the native Slack integration can run this package as a dedicated worker with `CONNECTION_AUTH_MODE=native`. The gateway and worker use the same `ADMIN_AGENT_SERVICE_TOKEN`, and the gateway sets `LITELLM_ADMIN_AGENT_URL` to the worker's private HTTP address. Keep that address on the deployment network; do not add a public ingress for the worker
+Run this repository's worker image separately from the LiteLLM gateway with `CONNECTION_AUTH_MODE=native`. Build it with `docker build -t litellm-admin-agent:local .`, or use a published `ghcr.io/berriai/litellm-admin-agent:<version>` release. The gateway's `/admin/mcp` endpoint runs inside LiteLLM and does not require this worker. The gateway and worker use the same `ADMIN_AGENT_SERVICE_TOKEN`, and the gateway sets `LITELLM_ADMIN_AGENT_URL` to the worker's private HTTP address. Keep that address on the deployment network; do not add a public ingress for the worker
 
 In this mode, Slack links open `/liteadmin/slack/connect/` on the existing gateway. The user signs in through the gateway's normal SSO, confirms the connection, and the gateway hands a personal session to the worker over the private network. The worker independently verifies the user's current admin role and matching Slack email before consuming the link. Sessions expire after 24 hours; `connect` renews them, while `disconnect` removes the worker's saved copy and invalidates pending links. It does not revoke an exported session credential at the gateway
 
 There is no hosted OAuth callback or separate agent domain. `AGENT_PUBLIC_URL` defaults to the gateway origin when omitted. The worker still needs outbound access to Slack and HTTPS access to the gateway. Run one worker per Slack app and preserve its encrypted state volume and encryption key
+
+Native mode uses the gateway's `/admin/mcp` endpoint with the current user's credential. The gateway must include built-in Admin MCP and have a valid Enterprise license. `ADMIN_MCP_URL` overrides that endpoint when explicitly configured. The `api_key` and `sso` modes keep using the bundled standalone connector unless `ADMIN_MCP_URL` is set
 
 Install the package with its locked dependencies, then run `litellm-admin-agent --web`. The source checkout's `python app.py --web` remains supported
 
