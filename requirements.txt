@@ -1018,9 +1018,9 @@ multidict==6.9.1 \
     # via
     #   aiohttp
     #   yarl
-openai==3.16.2 \
-    --hash=sha256:660a7f8307e6605342ae84ff4425412e7cd19e5e9b298f975502df2a1a9a5d5f \
-    --hash=sha256:e129455fc6a744276cda63a9e2f0759207bc0cf24afc4cf356bf5029e631e955
+openai==3.37.0 \
+    --hash=sha256:670bd6f699000d43a2073bcf94374a55bb133bfe5de0d084d47eb9bb9f6a8e5d \
+    --hash=sha256:d9f5b000f52397a7f9f946012744c5bc4c962eed3c100385252464c273a63e57
     # via
     #   -r requirements.in
     #   openai-agents
@@ -1308,7 +1308,7 @@ pydantic-core==2.46.5 \
     --hash=sha256:fc8515076c11f3cfdf4fb142dcca0fe384b1230a3b5415458ac84f3e0903ec13 \
     --hash=sha256:ff218293c9c806138dca139765e3b067621be52bcd93cdc14c7711be7ddc90a9
     # via pydantic
-pyjwt==2.15.0 \
+pyjwt[crypto]==2.15.0 \
     --hash=sha256:7a3742debf6b879e912dbb9819ceec1594be812452b78c5f2e2dfc56564954f8 \
     --hash=sha256:b11c5f9791d7bf51c2b39a81ed669f6b2dbbd669df2942f6c60167e9e3d1abe4
     # via

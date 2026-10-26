@@ -1,5 +1,5 @@
 openai-agents==0.22.3
-openai==3.16.2
+openai==3.37.0
 mcp==2.2.0
 httpx2==2.13.0
 agentchat @ https://github.com/BerriAI/agentchat/archive/66fb493674cbfd57dd92b83c2785424972352ab2.tar.gz
