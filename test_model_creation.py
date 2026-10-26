@@ -69,6 +69,8 @@ async def test_agent_creates_and_verifies_model_through_packaged_mcp(lookup_name
     async def gateway(request):
         nonlocal deployment
         assert request.headers["Authorization"] == "Bearer " + credential
+        if request.path == "/v2/user/info":
+            return web.json_response({"user_id": "admin", "user_role": "proxy_admin"})
         if request.path == "/user/info":
             return web.json_response({"user_id": "admin", "user_info": {"user_id": "admin", "user_role": "proxy_admin"}})
         if request.path == "/openapi.json":

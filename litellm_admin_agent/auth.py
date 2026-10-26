@@ -81,12 +81,12 @@ class AdminAuthorizer:
             raise AccessDenied()
         # This request authenticates the supplied credential; no caller-provided user ID
         # or role header is trusted. Never substitute the service's admin key here.
-        data = await self._get("/user/info", bearer)
-        user = self._admin(data.get("user_info"))
-        if data.get("user_id") != user["user_id"]:
+        user = self._admin(await self._get("/v2/user/info", bearer))
+        email = user.get("user_email")
+        if email is not None and not isinstance(email, str):
             raise AccessDenied()
         await self._require_enterprise(bearer)
-        return Principal(user["user_id"], str(user.get("user_email") or ""), "gateway", user["user_id"])
+        return Principal(user["user_id"], email or "", "gateway", user["user_id"])
 
     async def _require_enterprise(self, bearer: str) -> None:
         # The license is gateway-wide; only a confirmed Enterprise answer is cached.

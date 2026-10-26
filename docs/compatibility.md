@@ -4,7 +4,7 @@ This is a single-tenant service: one trusted HTTPS gateway origin and one Slack 
 
 The gateway must support:
 
-- `/user/info` with the supplied bearer, returning matching top-level/user-record IDs and a live `proxy_admin` role, with the user’s actual email.
+- `/v2/user/info` with the supplied bearer and no user ID parameter, returning the current user’s ID, live `proxy_admin` role, and actual email. The worker does not fall back to `/user/info`, which enumerates keys and teams for administrators.
 - A LiteLLM Enterprise license. `/health/license` with the supplied bearer must report `license_type: "enterprise"`; otherwise every request is refused. A confirmed license is cached for one hour, so removing it takes up to an hour to stop the agent; adding one takes effect on the next request.
 - `/v1/models` and chat completions using that same personal credential. Choose a model with reliable tool calling.
 - `/openapi.json` and the management endpoints you want to use. The connector
@@ -47,7 +47,7 @@ In this mode, Slack links open `/liteadmin/slack/connect/` on the existing gatew
 
 There is no hosted OAuth callback or separate agent domain. `AGENT_PUBLIC_URL` defaults to the gateway origin when omitted. The worker still needs outbound access to Slack and HTTPS access to the gateway. Run one worker per Slack app and preserve its encrypted state volume and encryption key
 
-Native mode uses the gateway's `/admin/mcp` endpoint with the current user's credential. The gateway must include built-in Admin MCP and have a valid Enterprise license. `ADMIN_MCP_URL` overrides that endpoint when explicitly configured. The `api_key` and `sso` modes keep using the bundled standalone connector unless `ADMIN_MCP_URL` is set
+Native mode uses the gateway's `/admin/mcp` endpoint with the current user's credential. The gateway must include built-in Admin MCP, enable it with `LITELLM_ENABLE_ADMIN_MCP=true`, and have a valid Enterprise license. `ADMIN_MCP_URL` overrides that endpoint when explicitly configured. The `api_key` and `sso` modes keep using the bundled standalone connector unless `ADMIN_MCP_URL` is set
 
 Install the package with its locked dependencies, then run `litellm-admin-agent --web`. The source checkout's `python app.py --web` remains supported
 
@@ -84,3 +84,9 @@ python register_agent.py --apply
 The preview hides the service token. Registration sets `make_public=false`, forwards the original caller’s Authorization header and adds a private `X-Admin-Agent-Token`. The service independently checks the caller’s current admin role. Claimed metadata/role headers are ignored. No Slack account is required for this transport.
 
 Only A2A 0.3 JSON-RPC `message/send` is supported: text messages, synchronous replies, no streaming/tasks/push. Request and message IDs are unique per authenticated caller and persisted across restarts. Duplicates return 409. Busy requests return 429; when the response explicitly says no operation started, retry later with new IDs. After timeouts or uncertain outcomes, inspect gateway state before sending another write.
+
+## Schema discovery and saved results
+
+The worker exposes `describe_admin_tool` and `read_admin_result` when the connector advertises them. These read-only helpers accompany the operations selected by `ADMIN_TOOL_NAMES`; that setting continues to accept only management operation names, including for the bundled standalone connector. Schema lookup is restricted to those enabled operations. Saved-result handles must come from an enabled operation or schema lookup in the current run; handles from earlier Slack messages or other runs are rejected. Use an enabled read to inspect current state in a later conversation. Never repeat a write to recover its result. Read-only mode keeps the helpers but cannot describe or execute excluded write operations.
+
+Schema descriptions preserve parameter definitions, including credential field names, while omitting literal defaults/examples and credential constraints. Schema examples never become privately delivered keys. Saved data reads retain the original field path for secret filtering, including individual fields and page previews. Complete virtual-key hashes remain available for management; partial secret strings are redacted.

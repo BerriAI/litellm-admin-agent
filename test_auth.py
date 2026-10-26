@@ -30,7 +30,7 @@ def auth(client):
 
 
 def info(role="proxy_admin", **extra):
-    return {"user_id": "admin-id", "user_info": account(role, **extra)}
+    return account(role, **extra)
 
 
 ENTERPRISE = {"has_license": True, "license_type": "enterprise"}
@@ -41,7 +41,7 @@ async def test_caller_bearer_is_used_and_service_key_never_substituted():
     client = Client(info(), ENTERPRISE)
     principal = await auth(client).require_gateway_admin("caller-secret")
     assert principal.user_id == "admin-id"
-    assert [url for url, _ in client.calls] == ["https://gateway.example.com/user/info",
+    assert [url for url, _ in client.calls] == ["https://gateway.example.com/v2/user/info",
                                                 "https://gateway.example.com/health/license"]
     for _, kwargs in client.calls:
         assert kwargs["headers"] == {"Authorization": "Bearer caller-secret"}
@@ -91,7 +91,7 @@ async def test_license_errors_fail_closed(license):
 
 
 @pytest.mark.parametrize("data", [info("internal_user"), info("proxy_admin_viewer"), info("team_admin"),
-    info(blocked=True), info(deleted=True), info(is_active=False), {**info(), "user_id": "spoofed"}, {}, (401, {}), (403, {})])
+    info(blocked=True), info(deleted=True), info(is_active=False), {"user_id": "spoofed", "user_info": account()}, {}, (401, {}), (403, {})])
 @pytest.mark.asyncio
 async def test_gateway_non_admins_and_invalid_identity_denied(data):
     with pytest.raises(AccessDenied):
@@ -155,3 +155,34 @@ async def test_slack_missing_scopes_fails_closed():
             raise RuntimeError("missing_scope")
     with pytest.raises(AuthorizationUnavailable):
         await auth(Client()).require_slack_admin("Uadmin", MissingScope(), "key")
+
+
+@pytest.mark.asyncio
+async def test_role_revocation_is_checked_even_with_cached_enterprise_license() -> None:
+    client = Client(info(), ENTERPRISE, info("internal_user"))
+    authorizer = auth(client)
+    await authorizer.require_gateway_admin("caller")
+    with pytest.raises(AccessDenied):
+        await authorizer.require_gateway_admin("caller")
+    assert [url for url, _ in client.calls] == [
+        "https://gateway.example.com/v2/user/info",
+        "https://gateway.example.com/health/license",
+        "https://gateway.example.com/v2/user/info",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_missing_v2_endpoint_fails_closed_without_enumeration_fallback() -> None:
+    client = Client((404, {}))
+    with pytest.raises(AuthorizationUnavailable):
+        await auth(client).require_gateway_admin("caller")
+    assert len(client.calls) == 1
+    assert client.calls[0][0] == "https://gateway.example.com/v2/user/info"
+
+
+@pytest.mark.parametrize("data", [info(user_id=""), info(user_id=None), info(user_id=42), info(user_email=[]),
+    {"user_id": "admin-id", "user_info": account()}])
+@pytest.mark.asyncio
+async def test_malformed_or_legacy_identity_cannot_authorize(data: dict[str, object]) -> None:
+    with pytest.raises(AccessDenied):
+        await auth(Client(data)).require_gateway_admin("caller")

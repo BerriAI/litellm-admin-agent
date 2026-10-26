@@ -174,6 +174,8 @@ async def test_real_connector_returns_key_only_to_private_delivery():
     body = {"key_alias": "engineering", "max_budget": 20}
     async def gateway(request):
         assert request.headers["Authorization"] == "Bearer personal-admin"
+        if request.path == "/v2/user/info":
+            return web.json_response({"user_id": "alice", "user_role": "proxy_admin"})
         if request.path == "/user/info":
             return web.json_response({"user_id": "alice", "user_info": {"user_id": "alice", "user_role": "proxy_admin"}})
         if request.path == "/openapi.json":
