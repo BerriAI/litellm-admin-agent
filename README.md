@@ -66,6 +66,10 @@ You choose **one login method for the deployment**. Each Slack user connects the
 
 ### Docker Compose
 
+Published GitHub releases with tags matching `v<project version>` build and test native amd64 and arm64 images, then publish `ghcr.io/berriai/litellm-admin-agent:<version>`. Pin a published version or digest when deploying. The first publication requires this workflow to land and a release to be published. Until then, build from the reviewed source revision with the commands below
+
+For the gateway's native Slack integration, use the [native deployment instructions](docs/compatibility.md#native-enterprise-deployment). The worker has its own image and release cycle. Enabling `/admin/mcp` alone does not require a worker
+
 - Set `AGENT_PUBLIC_URL` in `.env` to the HTTPS address you plan to use.
 - Run:
 

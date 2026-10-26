@@ -39,7 +39,7 @@ routes present in the gateway's OpenAPI spec.
 
 ## Native Enterprise deployment
 
-A LiteLLM image that includes the native Slack integration can run this package as a dedicated worker with `CONNECTION_AUTH_MODE=native`. The gateway and worker use the same `ADMIN_AGENT_SERVICE_TOKEN`, and the gateway sets `LITELLM_ADMIN_AGENT_URL` to the worker's private HTTP address. Keep that address on the deployment network; do not add a public ingress for the worker
+Run this repository's worker image separately from the LiteLLM gateway with `CONNECTION_AUTH_MODE=native`. Build it with `docker build -t litellm-admin-agent:local .`, or use a published `ghcr.io/berriai/litellm-admin-agent:<version>` release. The gateway's `/admin/mcp` endpoint runs inside LiteLLM and does not require this worker. The gateway and worker use the same `ADMIN_AGENT_SERVICE_TOKEN`, and the gateway sets `LITELLM_ADMIN_AGENT_URL` to the worker's private HTTP address. Keep that address on the deployment network; do not add a public ingress for the worker
 
 In this mode, Slack links open `/liteadmin/slack/connect/` on the existing gateway. The user signs in through the gateway's normal SSO, confirms the connection, and the gateway hands a personal session to the worker over the private network. The worker independently verifies the user's current admin role and matching Slack email before consuming the link. Sessions expire after 24 hours; `connect` renews them, while `disconnect` removes the worker's saved copy and invalidates pending links. It does not revoke an exported session credential at the gateway
 

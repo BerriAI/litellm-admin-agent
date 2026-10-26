@@ -11,4 +11,4 @@ USER agent
 ENV STATE_DB=/var/data/events.sqlite3 PORT=10000
 EXPOSE 10000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:10000/readyz', timeout=3)"
-CMD ["python", "app.py", "--web"]
+CMD ["litellm-admin-agent", "--web"]

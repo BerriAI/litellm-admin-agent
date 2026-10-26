@@ -1,0 +1,92 @@
+name: Publish worker image
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: worker-image-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+        with:
+          persist-credentials: false
+      - name: Validate the release version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+          version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[a-z0-9.-]+)?", version):
+              raise SystemExit("Unsupported project version")
+          if os.environ["RELEASE_TAG"] != "v" + version:
+              raise SystemExit("Release tag must match the project version")
+          with open(os.environ["GITHUB_ENV"], "a") as output:
+              output.write("WORKER_VERSION=" + version + "\n")
+              output.write("WORKER_IMAGE=ghcr.io/" + os.environ["GITHUB_REPOSITORY"].lower() + "\n")
+          PY
+      - name: Build the worker
+        env:
+          WORKER_ARCH: ${{ matrix.arch }}
+        run: docker build --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" --label "org.opencontainers.image.revision=$GITHUB_SHA" --label "org.opencontainers.image.version=$WORKER_VERSION" -t "$WORKER_IMAGE:$WORKER_VERSION-$WORKER_ARCH" .
+      - name: Test the worker and built image
+        env:
+          OPENAI_AGENTS_DISABLE_TRACING: "1"
+          WORKER_ARCH: ${{ matrix.arch }}
+        run: |
+          python3 -m venv .test-venv
+          .test-venv/bin/pip install --require-hashes -r requirements-dev.txt
+          .test-venv/bin/python -m pytest -q
+          SMOKE_IMAGE="$WORKER_IMAGE:$WORKER_VERSION-$WORKER_ARCH" .test-venv/bin/python scripts/smoke_container.py
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push the tested architecture
+        env:
+          WORKER_ARCH: ${{ matrix.arch }}
+        run: docker push "$WORKER_IMAGE:$WORKER_VERSION-$WORKER_ARCH"
+
+  manifest:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: write
+    steps:
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish the versioned multi-architecture image
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          version="${RELEASE_TAG#v}"
+          docker buildx imagetools create --tag "$image:$version" "$image:$version-amd64" "$image:$version-arm64"
+          docker buildx imagetools inspect "$image:$version"
