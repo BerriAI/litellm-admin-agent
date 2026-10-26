@@ -229,6 +229,8 @@ async def test_preflight_verifies_mcp_without_running_tools_or_inference(tmp_pat
     requests = []
     def handle(request):
         requests.append(request)
+        if request.url.path == "/v2/user/info":
+            return httpx2.Response(200, json={"user_id": "admin", "user_role": "proxy_admin"})
         if request.url.path == "/user/info":
             return httpx2.Response(200, json={"user_id": "admin", "user_info": {
                 "user_id": "admin", "user_email": "admin@example.com", "user_role": "proxy_admin"}})

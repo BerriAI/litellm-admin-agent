@@ -10,18 +10,52 @@ import sqlite3
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Final, Literal
 
 import jsonschema
 from mcp import types
+from pydantic import BaseModel, ConfigDict, JsonValue
 
 
 from litellm_admin_mcp.catalog import BY_NAME
+from litellm_admin_agent.results import KEY_PATTERN, SENSITIVE_FIELDS, clean_response
+
+HELPER_NAMES: Final = frozenset({"describe_admin_tool", "read_admin_result"})
+
+
+class _ResultPage(BaseModel):
+    model_config = ConfigDict(frozen=True, strict=True)
+
+    format: Literal["litellm-admin-page-v1"]
+    result_id: str
+    source_tool: str
+
+
+def result_handle(response: types.CallToolResult, source: str) -> str | None:
+    if response.is_error:
+        return None
+    if response.structured_content is not None:
+        try:
+            page = _ResultPage.model_validate(response.structured_content)
+        except ValueError:
+            pass
+        else:
+            if page.source_tool == source and page.result_id:
+                return page.result_id
+    for content in response.content:
+        if isinstance(content, types.TextContent):
+            try:
+                page = _ResultPage.model_validate_json(content.text)
+            except ValueError:
+                continue
+            if page.source_tool == source and page.result_id:
+                return page.result_id
+    return None
 
 
 def is_read_only(name: str) -> bool:
     operation = BY_NAME.get(name)
-    return bool(operation and operation.read_only)
+    return name in HELPER_NAMES or bool(operation and operation.read_only)
 
 
 class ToolOutcomeUnknown(RuntimeError):
@@ -98,13 +132,6 @@ class SlackThreads:
                             "(SELECT id FROM slack_threads ORDER BY updated_at DESC LIMIT -1 OFFSET 1000)")
 
 
-_KEY_PATTERN = re.compile(r"\bsk-[A-Za-z0-9_-]{8,}")
-_SENSITIVE_FIELDS = frozenset({
-    "token", "api_key", "access_token", "refresh_token", "password", "secret",
-    "client_secret", "authorization", "authentication_token", "credential_values",
-})
-
-
 @dataclass
 class SecretBoundary:
     """Keep returned virtual keys out of model context; deliver directly to the requester."""
@@ -133,7 +160,7 @@ class SecretBoundary:
                     # Hashed virtual-key identifiers are needed for management/reporting.
                     cleaned["key_hash"] = v
                 else:
-                    cleaned[k] = "[redacted]" if k.lower() in _SENSITIVE_FIELDS else self.clean(v)
+                    cleaned[k] = "[redacted]" if k.lower() in SENSITIVE_FIELDS else self.clean(v)
             return cleaned
         if isinstance(value, list):
             return [self.clean(v) for v in value]
@@ -153,7 +180,7 @@ class SecretBoundary:
                     self.keys[reference] = secret
                 # LiteLLM key endpoints accept the hashed token for later management.
                 return f"[{reference}; key_hash={hashlib.sha256(secret.encode()).hexdigest()}; delivered privately]"
-            return _KEY_PATTERN.sub(replace, value)
+            return KEY_PATTERN.sub(replace, value)
         return value
 
 
@@ -175,7 +202,7 @@ async def all_tools(session: Any) -> list[types.Tool]:
 class ToolBridge:
     def __init__(
         self, tools: list[types.Tool], allowed: frozenset[str],
-        invoke: Callable[..., Awaitable[Any]], journal: Journal, event_id: str,
+        invoke: Callable[..., Awaitable[types.CallToolResult]], journal: Journal, event_id: str,
         ensure_authorized: Callable[[], Awaitable[None]] | None = None,
         read_only: bool = False,
     ):
@@ -189,7 +216,8 @@ class ToolBridge:
             allowed = frozenset(name for name in allowed if is_read_only(name))
         if allowed - available.keys():
             raise ValueError("Select available LiteLLM Admin MCP tool names before starting the agent")
-        self.tools = {name: available[name] for name in allowed}
+        self.tools = {name: available[name] for name in allowed | (HELPER_NAMES & available.keys())}
+        self.result_sources: dict[str, str] = {}
         self.read_only = read_only
         self.invoke = invoke
         self.journal = journal
@@ -209,18 +237,32 @@ class ToolBridge:
         )
         return [
             {"name": t.name, "description": (t.description or "")[:6000],
-             "route": BY_NAME[t.name].path, "read_only": is_read_only(t.name),
+             "route": BY_NAME[t.name].path if t.name in BY_NAME else None, "read_only": is_read_only(t.name),
              "input_schema": t.input_schema}
             for t in ranked[:5]
         ]
 
-    async def call(self, name: str, arguments: dict) -> str:
+    async def call(self, name: str, arguments: dict[str, JsonValue]) -> str:
         if name not in self.tools:
             return json.dumps({"error": "Tool is not enabled for this agent."})
         try:
             jsonschema.validate(arguments, self.tools[name].input_schema)
         except jsonschema.ValidationError as exc:
             return json.dumps({"error": "Invalid arguments", "field": list(exc.absolute_path), "rule": exc.validator})
+        source, path = name, ""
+        if name == "describe_admin_tool":
+            target = arguments.get("name")
+            if not isinstance(target, str) or target not in self.tools.keys() & BY_NAME.keys():
+                return json.dumps({"error": "The source tool is not enabled for this agent."})
+            source = "schema:" + target
+        elif name == "read_admin_result":
+            token = arguments.get("result_id")
+            if not isinstance(token, str) or token not in self.result_sources:
+                return json.dumps({"error": "Result is not from an enabled tool in this run. Inspect current state with an enabled read. Never repeat a write to recover its result."})
+            source = self.result_sources[token]
+            path = arguments.get("path", "")
+            if not isinstance(path, str):
+                return json.dumps({"error": "Invalid result path"})
         fingerprint = json.dumps([name, arguments], sort_keys=True, separators=(",", ":"))
         async with self.lock:
             if self.ensure_authorized:
@@ -236,7 +278,11 @@ class ToolBridge:
             try:
                 response = await self.invoke(name=name, arguments=arguments)
                 data = response.model_dump(mode="json", by_alias=True)
-                cleaned = self.secrets.clean(data)
+                cleaned = (self.secrets.clean(data) if response.is_error else
+                           clean_response(data, source=source, path=path, clean=self.secrets.clean))
+                handle = result_handle(response, source)
+                if handle is not None:
+                    self.result_sources[handle] = source
                 encoded = json.dumps(cleaned)
                 if not read_only and data.get("isError"):
                     # MCP can return a timeout/HTTP 5xx as a normal error result.
