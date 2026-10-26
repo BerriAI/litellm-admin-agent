@@ -1,6 +1,7 @@
 # LiteLLM Admin Agent
 
-Manage your LiteLLM gateway from Slack DMs and channel threads, using the standalone
+Manage your LiteLLM gateway from Slack DMs and channel threads. Native deployments
+use the gateway's built-in `/admin/mcp` endpoint. Standalone deployments use the
 [LiteLLM Admin MCP](https://github.com/BerriAI/litellm-admin-mcp) connector.
 
 - Ask about models, keys, teams, budgets and spending.
