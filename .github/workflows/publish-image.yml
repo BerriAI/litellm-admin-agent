@@ -61,7 +61,7 @@ jobs:
           .test-venv/bin/pip install --require-hashes -r requirements-dev.txt
           .test-venv/bin/python -m pytest -q
           SMOKE_IMAGE="$WORKER_IMAGE:$WORKER_VERSION-$WORKER_ARCH" .test-venv/bin/python scripts/smoke_container.py
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -77,7 +77,7 @@ jobs:
     permissions:
       packages: write
     steps:
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
